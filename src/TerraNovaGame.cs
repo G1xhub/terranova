@@ -276,9 +276,18 @@ public class TerraNovaGame : Game
         // Render game to render target for pixel-perfect scaling
         GraphicsDevice.SetRenderTarget(_gameRenderTarget);
             
-            // Determine background color - always start with sky color
+            // Determine background color - dark for underground, sky color for surface
             // Underground background will be drawn in DrawBackground()
-        GraphicsDevice.Clear(GetSkyColor());
+        var visible = _camera.VisibleArea;
+        int tileSize = GameConfig.TileSize;
+        int visibleBottomTile = Math.Min(_world.Height - 1, (visible.Bottom + tileSize - 1) / tileSize);
+        int surfaceLevel = Config.SurfaceLevel;
+        bool isUnderground = visibleBottomTile > surfaceLevel;
+        
+        Color clearColor = isUnderground 
+            ? new Color(20, 20, 30)  // Dark for underground
+            : GetSkyColor();          // Sky color for surface
+        GraphicsDevice.Clear(clearColor);
         
         // #region agent log
         TerraNovaGame.AgentLog("TerraNovaGame.Draw", "render-target-setup", new { 
@@ -753,7 +762,7 @@ public class TerraNovaGame : Game
                 int depthBelowSurface = undergroundTop - surfaceLevel;
                 float depthFactor = MathHelper.Clamp(depthBelowSurface / 100f, 0f, 1f);
                 
-                DrawUndergroundBackgroundWithTiles(undergroundArea, depthFactor, undergroundTop);
+                DrawFullCaveBackground(undergroundArea, depthFactor, undergroundTop);
             }
         }
         else
@@ -815,10 +824,10 @@ public class TerraNovaGame : Game
         }
     }
     
-    private void DrawUndergroundBackgroundWithTiles(Rectangle visible, float depthFactor, int startTileY)
+    private void DrawFullCaveBackground(Rectangle visible, float depthFactor, int startTileY)
     {
-        // Draw earth tiles in the background to create depth impression
-        // Similar to the second screenshot where earth tiles are visible in the background
+        // Draw full cave background with multiple layers - always draws tiles (even if foreground tiles exist)
+        // Creates a complete cave wall effect instead of just showing blue background
         
         // Safety checks
         if (_world == null || TextureManager.TileAtlas == null)
@@ -838,98 +847,70 @@ public class TerraNovaGame : Game
         if (startTileY > endTileY || startTileX > endTileX)
             return;
         
-        // Calculate parallax offset for depth effect
-        float parallaxOffsetX = -_camera.Position.X * 0.05f; // Slow parallax for background
-        
-        // Draw background earth tiles with reduced opacity and darker colors for depth
-        for (int tileY = startTileY; tileY <= endTileY; tileY++)
+        // Define 4 layers with different parallax speeds and opacities
+        var layers = new[]
         {
-            int depthBelowSurface = tileY - Config.SurfaceLevel;
-            if (depthBelowSurface < 0) continue; // Only draw underground
-            
-            float localDepthFactor = MathHelper.Clamp(depthBelowSurface / 100f, 0f, 1f);
-            
-            // Determine tile type based on depth (dirt near surface, stone deeper)
-            TileType bgTileType = localDepthFactor < 0.3f ? TileType.Dirt : TileType.Stone;
-            
-            // Calculate opacity and darkness based on depth
-            float opacity = MathHelper.Lerp(0.4f, 0.15f, localDepthFactor); // Fade with depth
-            float darkness = MathHelper.Lerp(0.6f, 0.9f, localDepthFactor); // Darker with depth
-            
-            for (int tileX = startTileX; tileX <= endTileX; tileX++)
-            {
-                // Only draw if there's air in front (not blocked by solid tiles)
-                var frontTile = _world.GetTile(tileX, tileY);
-                if (TileProperties.IsSolid(frontTile))
-                    continue; // Skip if solid tile blocks the view
-                
-                // Calculate world position with parallax
-                int worldX = (int)(tileX * tileSize + parallaxOffsetX);
-                int worldY = tileY * tileSize;
-                
-                // Only draw if in visible area
-                if (worldX + tileSize < visible.Left || worldX > visible.Right ||
-                    worldY + tileSize < visible.Top || worldY > visible.Bottom)
-                    continue;
-                
-                try
-                {
-                    var sourceRect = TextureManager.GetTileRect(bgTileType);
-                    var destRect = new Rectangle(worldX, worldY, tileSize, tileSize);
-                    
-                    // Apply darkness and opacity for depth effect
-                    Color tileColor = Color.White * opacity * darkness;
-                    
-                    _spriteBatch.Draw(TextureManager.TileAtlas, destRect, sourceRect, tileColor);
-                }
-                catch
-                {
-                    // Skip this tile if there's an error (e.g., invalid tile type)
-                    continue;
-                }
-            }
-        }
+            (parallaxSpeed: 0.05f, opacity: 0.5f, darkness: 0.7f, tileStep: 1),  // Layer 1: Nearest, most visible
+            (parallaxSpeed: 0.03f, opacity: 0.3f, darkness: 0.8f, tileStep: 2),  // Layer 2: Medium
+            (parallaxSpeed: 0.015f, opacity: 0.15f, darkness: 0.85f, tileStep: 3), // Layer 3: Far
+            (parallaxSpeed: 0.01f, opacity: 0.08f, darkness: 0.9f, tileStep: 4)   // Layer 4: Farthest, least visible
+        };
         
-        // Draw one additional depth layer (further back, darker, slower parallax) - reduced from 2 to 1
-        float layerParallax = 0.02f; // Slower parallax
-        float layerOpacity = 0.15f * (1f - depthFactor * 0.5f);
-        float layerDarkness = 0.85f;
-        
-        parallaxOffsetX = -_camera.Position.X * layerParallax;
-        
-        // Use larger tile steps (4 instead of 2) for better performance
-        for (int tileY = startTileY; tileY <= endTileY; tileY += 4)
+        // Draw each layer
+        for (int layerIndex = 0; layerIndex < layers.Length; layerIndex++)
         {
-            int depthBelowSurface = tileY - Config.SurfaceLevel;
-            if (depthBelowSurface < 0) continue;
+            var layer = layers[layerIndex];
+            float parallaxOffsetX = -_camera.Position.X * layer.parallaxSpeed;
             
-            TileType bgTileType = depthBelowSurface < 20 ? TileType.Dirt : TileType.Stone;
-            
-            for (int tileX = startTileX; tileX <= endTileX; tileX += 4)
+            // Draw tiles for this layer
+            for (int tileY = startTileY; tileY <= endTileY; tileY += layer.tileStep)
             {
-                var frontTile = _world.GetTile(tileX, tileY);
-                if (TileProperties.IsSolid(frontTile))
-                    continue;
+                int depthBelowSurface = tileY - Config.SurfaceLevel;
+                if (depthBelowSurface < 0) continue; // Only draw underground
                 
-                int worldX = (int)(tileX * tileSize + parallaxOffsetX);
-                int worldY = tileY * tileSize;
+                float localDepthFactor = MathHelper.Clamp(depthBelowSurface / 150f, 0f, 1f);
                 
-                if (worldX + tileSize < visible.Left || worldX > visible.Right ||
-                    worldY + tileSize < visible.Top || worldY > visible.Bottom)
-                    continue;
+                // Determine tile type based on depth (dirt near surface, stone deeper, bedrock very deep)
+                TileType bgTileType;
+                if (localDepthFactor < 0.2f)
+                    bgTileType = TileType.Dirt;
+                else if (localDepthFactor < 0.8f)
+                    bgTileType = TileType.Stone;
+                else
+                    bgTileType = TileType.Bedrock;
                 
-                try
+                // Calculate opacity and darkness for this layer and depth
+                float layerOpacity = layer.opacity * (1f - localDepthFactor * 0.3f); // Slightly fade with depth
+                float layerDarkness = layer.darkness + localDepthFactor * 0.1f; // Darker with depth
+                layerDarkness = MathHelper.Clamp(layerDarkness, 0f, 1f);
+                
+                for (int tileX = startTileX; tileX <= endTileX; tileX += layer.tileStep)
                 {
-                    var sourceRect = TextureManager.GetTileRect(bgTileType);
-                    var destRect = new Rectangle(worldX, worldY, tileSize, tileSize);
-                    Color tileColor = Color.White * layerOpacity * layerDarkness;
+                    // ALWAYS draw tiles (even if foreground tiles exist) - this creates the full cave wall
+                    // Calculate world position with parallax
+                    int worldX = (int)(tileX * tileSize + parallaxOffsetX);
+                    int worldY = tileY * tileSize;
                     
-                    _spriteBatch.Draw(TextureManager.TileAtlas, destRect, sourceRect, tileColor);
-                }
-                catch
-                {
-                    // Skip this tile if there's an error
-                    continue;
+                    // Only draw if in visible area
+                    if (worldX + tileSize < visible.Left || worldX > visible.Right ||
+                        worldY + tileSize < visible.Top || worldY > visible.Bottom)
+                        continue;
+                    
+                    try
+                    {
+                        var sourceRect = TextureManager.GetTileRect(bgTileType);
+                        var destRect = new Rectangle(worldX, worldY, tileSize, tileSize);
+                        
+                        // Apply layer opacity, darkness, and depth for full cave wall effect
+                        Color tileColor = Color.White * layerOpacity * layerDarkness;
+                        
+                        _spriteBatch.Draw(TextureManager.TileAtlas, destRect, sourceRect, tileColor);
+                    }
+                    catch
+                    {
+                        // Skip this tile if there's an error
+                        continue;
+                    }
                 }
             }
         }
@@ -937,10 +918,10 @@ public class TerraNovaGame : Game
     
     private void DrawUndergroundBackground(Rectangle visible, float depthFactor)
     {
-        // Legacy method - now replaced by DrawUndergroundBackgroundWithTiles
+        // Legacy method - now replaced by DrawFullCaveBackground
         // Keep for compatibility but redirect
         int startTileY = visible.Top / GameConfig.TileSize;
-        DrawUndergroundBackgroundWithTiles(visible, depthFactor, startTileY);
+        DrawFullCaveBackground(visible, depthFactor, startTileY);
     }
     
     private void DrawCelestialBodies()

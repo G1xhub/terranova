@@ -99,12 +99,12 @@ public class WorldGenerator
         
         for (int x = 0; x < _world.Width; x++)
         {
-            // Multi-octave terrain height
+            // Multi-octave terrain height - reduced for flatter surface
             double height = 0;
-            height += _terrainNoise.Noise2D(x * 0.003, 0) * 80;   // Large hills
-            height += _terrainNoise.Noise2D(x * 0.01, 0) * 30;    // Medium variation
-            height += _terrainNoise.Noise2D(x * 0.05, 0) * 10;    // Small bumps
-            height += _detailNoise.Noise2D(x * 0.1, 0) * 4;       // Micro detail
+            height += _terrainNoise.Noise2D(x * 0.003, 0) * 30;   // Large hills (reduced from 80)
+            height += _terrainNoise.Noise2D(x * 0.01, 0) * 15;    // Medium variation (reduced from 30)
+            height += _terrainNoise.Noise2D(x * 0.05, 0) * 5;      // Small bumps (reduced from 10)
+            height += _detailNoise.Noise2D(x * 0.1, 0) * 2;       // Micro detail (reduced from 4)
             
             _surfaceHeights[x] = _surfaceLevel + (int)height;
             
