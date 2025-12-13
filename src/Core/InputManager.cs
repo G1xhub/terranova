@@ -48,6 +48,17 @@ public class InputManager
         CalculateMovement();
     }
     
+    /// <summary>
+    /// Reset input state - useful when closing menus to prevent stuck input
+    /// </summary>
+    public void ResetState()
+    {
+        // Set previous states to current states to prevent "stuck" pressed states
+        _previousKeyboard = _currentKeyboard;
+        _previousMouse = _currentMouse;
+        _previousGamePad = _currentGamePad;
+    }
+    
     private void CalculateMovement()
     {
         var movement = Vector2.Zero;

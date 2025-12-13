@@ -253,6 +253,49 @@ public class ParticleSystem
         }
     }
     
+    public void SpawnPollen(Vector2 position)
+    {
+        // Spawn pollen particles during day - yellow/golden, floating upward
+        for (int i = 0; i < 2; i++)
+        {
+            float angle = (float)(Random.Shared.NextDouble() * Math.PI * 2);
+            float speed = (float)(Random.Shared.NextDouble() * 10 + 5);
+            var velocity = new Vector2(
+                (float)Math.Cos(angle) * speed * 0.3f,
+                (float)Math.Sin(angle) * speed - 15 // Upward drift
+            );
+            
+            // Pollen colors: yellow, golden, light yellow
+            var pollenColors = new[] {
+                new Color(255, 240, 150, 200), // Bright yellow
+                new Color(255, 220, 120, 180),  // Golden
+                new Color(250, 250, 180, 220)   // Light yellow
+            };
+            var pollenColor = pollenColors[Random.Shared.Next(pollenColors.Length)];
+            
+            float size = (float)(Random.Shared.NextDouble() * 1.5 + 1);
+            float lifetime = (float)(Random.Shared.NextDouble() * 4 + 3); // Long lifetime
+            SpawnParticle(position, velocity, pollenColor, size, lifetime, -30f, ParticleType.Dust); // Negative gravity = upward float
+        }
+    }
+    
+    public void SpawnWindParticle(Vector2 position)
+    {
+        // Spawn wind particles - subtle, transparent, horizontal movement
+        float windSpeed = (float)(Random.Shared.NextDouble() * 20 + 10);
+        var velocity = new Vector2(
+            windSpeed * (Random.Shared.NextDouble() > 0.5 ? 1 : -1), // Random horizontal direction
+            (float)(Random.Shared.NextDouble() * 5 - 2.5f) // Slight vertical variation
+        );
+        
+        // Very subtle, transparent wind color
+        var windColor = new Color(200, 220, 240, 80); // Light blue-gray, very transparent
+        
+        float size = (float)(Random.Shared.NextDouble() * 2 + 1);
+        float lifetime = (float)(Random.Shared.NextDouble() * 2 + 1.5f);
+        SpawnParticle(position, velocity, windColor, size, lifetime, 0f, ParticleType.Dust); // No gravity, just drift
+    }
+    
     public void SpawnDamageParticles(Vector2 position, int damage)
     {
         for (int i = 0; i < Math.Min(damage / 5, 20); i++)

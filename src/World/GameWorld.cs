@@ -42,6 +42,9 @@ public class GameWorld
     // Biome data (per column, stored by WorldGenerator)
     private BiomeType[]? _biomes;
     
+    // Underground biome data (per tile, for cave biomes)
+    private BiomeType[]? _undergroundBiomes;
+    
     // State
     public bool LightingDirty { get; set; } = true;
     public int LoadedChunkCount => _loadedChunks.Count;
@@ -68,10 +71,27 @@ public class GameWorld
         _biomes = biomes;
     }
     
+    public void SetUndergroundBiomes(BiomeType[] undergroundBiomes)
+    {
+        _undergroundBiomes = undergroundBiomes;
+    }
+    
     public BiomeType GetBiomeAt(int x, int y)
     {
         if (_biomes == null || x < 0 || x >= Width)
             return BiomeType.Forest;
+        
+        // Check if underground biome map exists
+        if (_undergroundBiomes != null && y > TerraNovaGame.Config.SurfaceLevel)
+        {
+            int index = y * Width + x;
+            if (index >= 0 && index < _undergroundBiomes.Length)
+            {
+                var undergroundBiome = _undergroundBiomes[index];
+                if (undergroundBiome != BiomeType.Forest) // Forest is default, means not set
+                    return undergroundBiome;
+            }
+        }
         
         // Use surface biome for the column
         return _biomes[x];
@@ -336,7 +356,7 @@ public class GameWorld
     /// <summary>
     /// Draw visible chunks
     /// </summary>
-    public void Draw(SpriteBatch spriteBatch, Camera2D camera, ParticleSystem? particles = null)
+    public void Draw(SpriteBatch spriteBatch, Camera2D camera, GameTime? gameTime = null, ParticleSystem? particles = null)
     {
         // Calculate visible chunk range
         var visible = camera.VisibleArea;
@@ -364,7 +384,7 @@ public class GameWorld
         {
             for (int cx = startChunkX; cx <= endChunkX; cx++)
             {
-                _chunks[cx, cy].Draw(spriteBatch, camera, _lightingSystem, this);
+                _chunks[cx, cy].Draw(spriteBatch, camera, gameTime, _lightingSystem, this);
                 
                 // Spawn heat particles for fire sources in visible chunks
                 if (particles != null)

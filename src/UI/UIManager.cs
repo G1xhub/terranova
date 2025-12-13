@@ -20,9 +20,18 @@ public class UIManager
     // UI State
     private bool _inventoryOpen = false;
     private bool _craftingOpen = false;
+    private bool _brewingOpen = false;
+    
+    // Public properties to check menu state
+    public bool IsInventoryOpen => _inventoryOpen;
+    public bool IsCraftingOpen => _craftingOpen;
+    public bool IsBrewingOpen => _brewingOpen;
+    public bool IsAnyMenuOpen => _inventoryOpen || _craftingOpen || _brewingOpen;
     private int _hoveredSlot = -1;
     private int _hoveredRecipe = -1;
+    private int _hoveredBrewingRecipe = -1;
     private List<CraftingRecipe> _availableRecipes = new();
+    private List<BrewingRecipe> _availableBrewingRecipes = new();
     
     // UI Dimensions
     private const int HotbarSlotSize = 44;
@@ -55,6 +64,11 @@ public class UIManager
             {
                 UpdateAvailableRecipes();
             }
+            else
+            {
+                // Reset input state when closing menu to prevent stuck input
+                input.ResetState();
+            }
         }
         
         // Toggle crafting (C key)
@@ -64,6 +78,11 @@ public class UIManager
             if (_craftingOpen)
             {
                 UpdateAvailableRecipes();
+            }
+            else
+            {
+                // Reset input state when closing menu to prevent stuck input
+                input.ResetState();
             }
         }
         
@@ -84,6 +103,18 @@ public class UIManager
                 TryCraftRecipe(_hoveredRecipe);
             }
         }
+        
+        // Update hovered brewing recipe
+        if (_brewingOpen)
+        {
+            UpdateBrewingHover(input.MousePosition);
+            
+            // Brew on click
+            if (input.IsMouseButtonPressed(MouseButton.Left) && _hoveredBrewingRecipe >= 0)
+            {
+                TryBrewRecipe(_hoveredBrewingRecipe);
+            }
+        }
     }
     
     private void UpdateAvailableRecipes()
@@ -95,6 +126,11 @@ public class UIManager
             hasFurnace,
             hasAnvil
         ).ToList();
+    }
+    
+    private void UpdateAvailableBrewingRecipes()
+    {
+        _availableBrewingRecipes = BrewingSystem.GetAvailableRecipes(_player.Inventory).ToList();
     }
     
     private (bool craftingTable, bool furnace, bool anvil) CheckNearbyStations()
@@ -146,6 +182,31 @@ public class UIManager
         }
     }
     
+    private void UpdateBrewingHover(Vector2 mousePos)
+    {
+        // Calculate brewing panel position
+        int panelWidth = 400;
+        int panelHeight = 500;
+        int panelX = (_graphicsDevice.Viewport.Width - panelWidth) / 2;
+        int panelY = (_graphicsDevice.Viewport.Height - panelHeight) / 2;
+        
+        int recipeHeight = 60;
+        int startY = panelY + 60; // After title
+        
+        _hoveredBrewingRecipe = -1;
+        
+        for (int i = 0; i < _availableBrewingRecipes.Count; i++)
+        {
+            int recipeY = startY + i * recipeHeight;
+            if (mousePos.X >= panelX && mousePos.X < panelX + panelWidth &&
+                mousePos.Y >= recipeY && mousePos.Y < recipeY + recipeHeight)
+            {
+                _hoveredBrewingRecipe = i;
+                return;
+            }
+        }
+    }
+    
     private void TryCraftRecipe(int recipeIndex)
     {
         if (recipeIndex < 0 || recipeIndex >= _availableRecipes.Count) return;
@@ -156,6 +217,18 @@ public class UIManager
         if (CraftingSystem.TryCraft(recipe.Result, _player.Inventory, hasCraftingTable, hasFurnace, hasAnvil))
         {
             UpdateAvailableRecipes(); // Refresh after crafting
+        }
+    }
+    
+    private void TryBrewRecipe(int recipeIndex)
+    {
+        if (recipeIndex < 0 || recipeIndex >= _availableBrewingRecipes.Count) return;
+        
+        var recipe = _availableBrewingRecipes[recipeIndex];
+        
+        if (BrewingSystem.TryBrew(recipe.Result, _player.Inventory))
+        {
+            UpdateAvailableBrewingRecipes(); // Refresh after brewing
         }
     }
     
@@ -205,6 +278,11 @@ public class UIManager
         {
             DrawCrafting(spriteBatch);
         }
+        
+        if (_brewingOpen)
+        {
+            DrawBrewingMenu(spriteBatch);
+        }
     }
     
     private void DrawHealthBar(SpriteBatch spriteBatch)
@@ -238,16 +316,29 @@ public class UIManager
         int width = 150;
         int height = 14;
         
-        // Background
-        DrawRect(spriteBatch, x, y, width, height, HealthBarBg);
-        
-        // Mana fill
         float manaPercent = (float)_player.Mana / _player.MaxMana;
-        int fillWidth = (int)(width * manaPercent);
-        DrawRect(spriteBatch, x, y, fillWidth, height, ManaBarFg);
         
-        // Border
-        DrawRectOutline(spriteBatch, x, y, width, height, Color.White, 1);
+        // Modern background with gradient
+        var bgDark = new Color(20, 20, 30, 220);
+        var bgLight = new Color(35, 35, 50, 220);
+        DrawRectGradient(spriteBatch, x, y, width, height, bgDark, bgLight);
+        
+        // Mana fill with gradient (blue to bright blue)
+        int fillWidth = (int)(width * manaPercent);
+        if (fillWidth > 0)
+        {
+            var manaDark = new Color(30, 80, 180);
+            var manaLight = new Color(80, 150, 255);
+            DrawRectGradient(spriteBatch, x, y, fillWidth, height, manaDark, manaLight);
+            
+            // Glow effect on mana bar
+            var glowColor = new Color(100, 150, 255, 100);
+            DrawRect(spriteBatch, x, y, fillWidth, height / 2, glowColor);
+        }
+        
+        // Modern border with highlight
+        DrawRectOutline(spriteBatch, x, y, width, height, new Color(150, 150, 150), 1);
+        DrawRectOutline(spriteBatch, x + 1, y + 1, width - 2, height - 2, new Color(80, 80, 80), 1);
     }
     
     private void DrawHotbar(SpriteBatch spriteBatch)
@@ -256,11 +347,20 @@ public class UIManager
         int startX = (_graphicsDevice.Viewport.Width - totalWidth) / 2;
         int y = _graphicsDevice.Viewport.Height - HotbarSlotSize - 20;
         
-        // Draw backing panel
+        // Draw modern backing panel with gradient
+        var panelBgDark = new Color(20, 20, 30, 240);
+        var panelBgLight = new Color(40, 40, 60, 240);
+        DrawRectGradient(spriteBatch, startX - 8, y - 6, totalWidth + 16, HotbarSlotSize + 12, panelBgDark, panelBgLight);
+        
+        // Draw panel border with highlight
+        DrawRectOutline(spriteBatch, startX - 8, y - 6, totalWidth + 16, HotbarSlotSize + 12, new Color(100, 100, 120), 2);
+        DrawRectOutline(spriteBatch, startX - 7, y - 5, totalWidth + 14, HotbarSlotSize + 10, new Color(60, 60, 80), 1);
+        
+        // Also draw texture if available for extra detail
         if (TextureManager.UIHotbar != null)
         {
             var panelRect = new Rectangle(startX - 8, y - 6, totalWidth + 16, HotbarSlotSize + 12);
-            spriteBatch.Draw(TextureManager.UIHotbar, panelRect, Color.White);
+            spriteBatch.Draw(TextureManager.UIHotbar, panelRect, new Color(255, 255, 255, 180));
         }
         
         for (int i = 0; i < 9; i++)
@@ -423,6 +523,17 @@ public class UIManager
         spriteBatch.Draw(TextureManager.Pixel, new Rectangle(x, y, width, height), color);
     }
     
+    private void DrawRectGradient(SpriteBatch spriteBatch, int x, int y, int width, int height, Color topColor, Color bottomColor)
+    {
+        // Draw gradient by drawing horizontal lines with interpolated colors
+        for (int i = 0; i < height; i++)
+        {
+            float t = i / (float)height;
+            Color lineColor = Color.Lerp(topColor, bottomColor, t);
+            spriteBatch.Draw(TextureManager.Pixel, new Rectangle(x, y + i, width, 1), lineColor);
+        }
+    }
+    
     private void DrawRectOutline(SpriteBatch spriteBatch, int x, int y, int width, int height, Color color, int thickness)
     {
         // Top
@@ -557,6 +668,81 @@ public class UIManager
         
         // Instructions
         FontManager.SmallFont.DrawText(spriteBatch, "Press C to close | Click recipe to craft", 
+            new Vector2(panelX + 20, panelY + panelHeight - 25), Color.Gray);
+    }
+    
+    private void DrawBrewingMenu(SpriteBatch spriteBatch)
+    {
+        // Darken background
+        DrawRect(spriteBatch, 0, 0, _graphicsDevice.Viewport.Width, _graphicsDevice.Viewport.Height, 
+            new Color(0, 0, 0, 150));
+        
+        // Calculate panel position
+        int panelWidth = 400;
+        int panelHeight = 500;
+        int panelX = (_graphicsDevice.Viewport.Width - panelWidth) / 2;
+        int panelY = (_graphicsDevice.Viewport.Height - panelHeight) / 2;
+        
+        // Draw panel background
+        DrawRect(spriteBatch, panelX, panelY, panelWidth, panelHeight, new Color(50, 40, 60, 240));
+        DrawRectOutline(spriteBatch, panelX, panelY, panelWidth, panelHeight, Color.Purple, 3);
+        
+        // Draw title
+        FontManager.LargeFont.DrawText(spriteBatch, "Brewing (B to close)", 
+            new Vector2(panelX + 20, panelY + 10), Color.Purple);
+        
+        // Draw recipes
+        int recipeHeight = 60;
+        int startY = panelY + 60;
+        
+        for (int i = 0; i < _availableBrewingRecipes.Count && i < 6; i++) // Max 6 visible
+        {
+            var recipe = _availableBrewingRecipes[i];
+            int recipeY = startY + i * recipeHeight;
+            bool hovered = i == _hoveredBrewingRecipe;
+            
+            // Recipe background
+            var bgColor = hovered ? new Color(80, 60, 100, 255) : new Color(60, 50, 70, 200);
+            DrawRect(spriteBatch, panelX + 10, recipeY, panelWidth - 20, recipeHeight - 5, bgColor);
+            
+            if (hovered)
+            {
+                DrawRectOutline(spriteBatch, panelX + 10, recipeY, panelWidth - 20, recipeHeight - 5, Color.Purple, 2);
+            }
+            
+            // Result item icon
+            int iconSize = 40;
+            int iconX = panelX + 20;
+            int iconY = recipeY + 10;
+            
+            if (TextureManager.ItemIcons.TryGetValue(recipe.Result, out var icon))
+            {
+                spriteBatch.Draw(icon, new Rectangle(iconX, iconY, iconSize, iconSize), Color.White);
+            }
+            else
+            {
+                var itemColor = GetItemColor(recipe.Result);
+                DrawRect(spriteBatch, iconX, iconY, iconSize, iconSize, itemColor);
+            }
+            
+            // Result name
+            string resultName = ItemProperties.GetName(recipe.Result);
+            if (recipe.Amount > 1)
+                resultName += $" x{recipe.Amount}";
+            FontManager.DebugFont.DrawText(spriteBatch, resultName, 
+                new Vector2(iconX + iconSize + 10, iconY + 5), Color.White);
+            
+            // Ingredients
+            int ingX = iconX + iconSize + 10;
+            int ingY = iconY + 20;
+            string ingredients = string.Join(", ", recipe.Ingredients.Select(ing => 
+                $"{ItemProperties.GetName(ing.item)} x{ing.amount}"));
+            FontManager.SmallFont.DrawText(spriteBatch, ingredients, 
+                new Vector2(ingX, ingY), Color.LightGray);
+        }
+        
+        // Instructions
+        FontManager.SmallFont.DrawText(spriteBatch, "Press B to close | Click recipe to brew", 
             new Vector2(panelX + 20, panelY + panelHeight - 25), Color.Gray);
     }
 }

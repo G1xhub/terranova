@@ -22,6 +22,11 @@ public class Chunk
     private readonly byte[,] _wallTiles;  // Background walls
     private readonly byte[,] _lightLevels; // Cached light values
     
+    // Cached rendering data
+    private readonly float[,] _aoCache; // Ambient occlusion cache
+    private readonly float[,] _shadowCache; // Shadow cache
+    private bool _shadowCacheDirty = true;
+    
     // State flags
     public bool IsModified { get; private set; }
     public bool IsLightingDirty { get; set; } = true;
@@ -44,11 +49,17 @@ public class Chunk
         _tiles = new TileType[Size, Size];
         _wallTiles = new byte[Size, Size];
         _lightLevels = new byte[Size, Size];
+        _aoCache = new float[Size, Size];
+        _shadowCache = new float[Size, Size];
         
         // Initialize light levels to bright by default (will be updated by lighting system)
         for (int y = 0; y < Size; y++)
             for (int x = 0; x < Size; x++)
+            {
                 _lightLevels[x, y] = 255;
+                _aoCache[x, y] = -1f; // -1 means not calculated yet
+                _shadowCache[x, y] = -1f;
+            }
         
         int pixelX = chunkX * Size * GameConfig.TileSize;
         int pixelY = chunkY * Size * GameConfig.TileSize;
@@ -80,6 +91,9 @@ public class Chunk
             _tiles[localX, localY] = type;
             IsModified = true;
             IsLightingDirty = true;
+            
+            // Invalidate AO and shadow cache for this tile and neighbors
+            InvalidateCache(localX, localY);
         }
     }
     
@@ -166,30 +180,18 @@ public class Chunk
         float glowIntensity = (lightLevel / 15f) * lightFactor * 0.7f; // Increased from 0.6f for more visible glow
         glowIntensity = MathHelper.Clamp(glowIntensity, 0f, 1f);
         
-        // Draw multiple glow layers for softer, more cozy effect
-        // Outer glow (larger, more transparent)
-        int outerGlowSize = GameConfig.TileSize + 8;
-        int outerGlowOffset = (outerGlowSize - GameConfig.TileSize) / 2;
-        var outerGlowRect = new Rectangle(
-            destRect.X - outerGlowOffset,
-            destRect.Y - outerGlowOffset,
-            outerGlowSize,
-            outerGlowSize
+        // Optimized: Single draw call with combined glow effect (blend of outer and inner)
+        int glowSize = GameConfig.TileSize + 6; // Average size between outer and inner
+        int glowOffset = (glowSize - GameConfig.TileSize) / 2;
+        var glowRect = new Rectangle(
+            destRect.X - glowOffset,
+            destRect.Y - glowOffset,
+            glowSize,
+            glowSize
         );
-        var outerGlowColor = glowColor * glowIntensity * 0.3f; // Soft outer halo
-        spriteBatch.Draw(TextureManager.Pixel, outerGlowRect, outerGlowColor);
-        
-        // Inner glow (smaller, more intense)
-        int innerGlowSize = GameConfig.TileSize + 4;
-        int innerGlowOffset = (innerGlowSize - GameConfig.TileSize) / 2;
-        var innerGlowRect = new Rectangle(
-            destRect.X - innerGlowOffset,
-            destRect.Y - innerGlowOffset,
-            innerGlowSize,
-            innerGlowSize
-        );
-        var innerGlowColor = glowColor * glowIntensity * 0.6f; // Brighter inner glow
-        spriteBatch.Draw(TextureManager.Pixel, innerGlowRect, innerGlowColor);
+        // Combined color: blend of outer (0.3) and inner (0.6) intensities
+        var combinedGlowColor = glowColor * glowIntensity * 0.45f; // Average of 0.3 and 0.6
+        spriteBatch.Draw(TextureManager.Pixel, glowRect, combinedGlowColor);
     }
     
     private void DrawHeatEffect(SpriteBatch spriteBatch, Rectangle destRect, TileType tile)
@@ -238,13 +240,23 @@ public class Chunk
     /// <summary>
     /// Draw the chunk
     /// </summary>
-    public void Draw(SpriteBatch spriteBatch, Camera2D camera, LightingSystem? lightingSystem = null, GameWorld? world = null)
+    public void Draw(SpriteBatch spriteBatch, Camera2D camera, GameTime? gameTime = null, LightingSystem? lightingSystem = null, GameWorld? world = null)
     {
         // Early out if chunk is not visible
         if (!camera.IsVisible(Bounds))
             return;
         
         var visibleArea = camera.VisibleArea;
+        
+        // Recalculate cache if lighting changed
+        if (IsLightingDirty)
+        {
+            _shadowCacheDirty = true;
+            // Mark all shadow cache as invalid
+            for (int y = 0; y < Size; y++)
+                for (int x = 0; x < Size; x++)
+                    _shadowCache[x, y] = -1f;
+        }
         
         // Calculate visible tile range within chunk
         int startX = Math.Max(0, (visibleArea.Left - Bounds.Left) / GameConfig.TileSize);
@@ -262,7 +274,14 @@ public class Chunk
                 int worldX = (TileStartX + x) * GameConfig.TileSize;
                 int worldY = (TileStartY + y) * GameConfig.TileSize;
                 
-                var sourceRect = TextureManager.GetTileRect(tile);
+                // Calculate animation frame for animated tiles
+                int frameIndex = 0;
+                if (TileProperties.IsAnimated(tile) && gameTime != null)
+                {
+                    frameIndex = GetAnimatedFrameIndex(tile, worldX, worldY, gameTime);
+                }
+                
+                var sourceRect = TextureManager.GetTileRect(tile, frameIndex);
                 var destRect = new Rectangle(worldX, worldY, GameConfig.TileSize, GameConfig.TileSize);
                 
                 // Apply lighting with color
@@ -289,17 +308,47 @@ public class Chunk
                         Color warmTint = new Color(255, 200, 150);
                         color = Color.Lerp(color, warmTint, heatInfluence * 0.3f); // 30% max warm tint
                     }
+                    
+                    // Apply biome-based color tint for underground biomes
+                    var biome = world.GetBiomeAt(TileStartX + x, TileStartY + y);
+                    if (biome == BiomeType.CrystalCave)
+                    {
+                        // Blue-purple crystal glow
+                        Color crystalTint = new Color(100, 120, 200);
+                        color = Color.Lerp(color, crystalTint, 0.15f);
+                    }
+                    else if (biome == BiomeType.MushroomCave)
+                    {
+                        // Purple-red mushroom glow
+                        Color mushroomTint = new Color(150, 80, 120);
+                        color = Color.Lerp(color, mushroomTint, 0.12f);
+                    }
+                    else if (biome == BiomeType.DeepCave)
+                    {
+                        // Very dark, desaturated
+                        color = Color.Lerp(color, Color.Black, 0.2f);
+                    }
                 }
                 
-                // Apply ambient occlusion (soft shadows at corners and edges)
-                float ao = CalculateAmbientOcclusion(x, y);
-                color = Color.Lerp(color, Color.Black, ao * 0.15f); // Subtle darkening
+                // Apply ambient occlusion (soft shadows at corners and edges) - use cache
+                if (_aoCache[x, y] < 0)
+                {
+                    _aoCache[x, y] = CalculateAmbientOcclusion(x, y);
+                }
+                float ao = _aoCache[x, y];
+                color = Color.Lerp(color, Color.Black, ao * 0.25f); // Stronger darkening (was 0.15f)
                 
-                // Apply shadow under blocks (if there's air below)
-                float shadow = CalculateBlockShadow(x, y);
+                // Apply shadow under blocks (if there's air below) - use cache
+                if (_shadowCacheDirty || _shadowCache[x, y] < 0)
+                {
+                    _shadowCache[x, y] = CalculateBlockShadow(x, y);
+                }
+                float shadow = _shadowCache[x, y];
                 if (shadow > 0)
                 {
-                    color = Color.Lerp(color, Color.Black, shadow * 0.2f);
+                    // Gradient-based shadow for softer edges
+                    float shadowIntensity = shadow * 0.35f; // Stronger shadow (was 0.2f)
+                    color = Color.Lerp(color, Color.Black, shadowIntensity);
                 }
                 
                 spriteBatch.Draw(TextureManager.TileAtlas, destRect, sourceRect, color);
@@ -317,6 +366,43 @@ public class Chunk
                     }
                 }
             }
+        }
+    }
+    
+    private int GetAnimatedFrameIndex(TileType tile, int worldX, int worldY, GameTime gameTime)
+    {
+        // Calculate frame index based on time and position for variation
+        float totalSeconds = (float)gameTime.TotalGameTime.TotalSeconds;
+        int tileHash = (worldX + worldY * 1000) % 1000; // Vary animation per tile position
+        
+        switch (tile)
+        {
+            case TileType.Water:
+                // 4 frames for wave animation
+                float waterSpeed = 2.0f; // Animation speed
+                int waterFrames = 4;
+                return ((int)(totalSeconds * waterSpeed) + tileHash / 100) % waterFrames;
+                
+            case TileType.Lava:
+                // 4 frames for bubbling animation
+                float lavaSpeed = 1.5f;
+                int lavaFrames = 4;
+                return ((int)(totalSeconds * lavaSpeed) + tileHash / 100) % lavaFrames;
+                
+            case TileType.Grass:
+                // 2 frames for gentle swaying
+                float grassSpeed = 1.0f;
+                int grassFrames = 2;
+                return ((int)(totalSeconds * grassSpeed) + tileHash / 200) % grassFrames;
+                
+            case TileType.Leaves:
+                // 2 frames for wind movement
+                float leavesSpeed = 1.2f;
+                int leavesFrames = 2;
+                return ((int)(totalSeconds * leavesSpeed) + tileHash / 200) % leavesFrames;
+                
+            default:
+                return 0;
         }
     }
     
@@ -356,10 +442,60 @@ public class Chunk
             // Shadow intensity based on light level
             byte light = GetLightLocal(localX, localY);
             float lightFactor = light / 255f;
-            return (1f - lightFactor) * 0.5f; // Stronger shadow in darker areas
+            
+            // Base shadow strength - stronger in darker areas
+            float baseShadow = (1f - lightFactor) * 0.6f; // Increased from 0.5f
+            
+            // Check neighbors for gradient effect (softer shadow edges)
+            float neighborShadow = 0f;
+            int neighborCount = 0;
+            
+            // Check left and right neighbors
+            var leftTile = GetTileLocal(localX - 1, localY);
+            var rightTile = GetTileLocal(localX + 1, localY);
+            
+            if (TileProperties.IsSolid(leftTile))
+            {
+                byte leftLight = GetLightLocal(localX - 1, localY);
+                neighborShadow += (1f - leftLight / 255f) * 0.3f;
+                neighborCount++;
+            }
+            if (TileProperties.IsSolid(rightTile))
+            {
+                byte rightLight = GetLightLocal(localX + 1, localY);
+                neighborShadow += (1f - rightLight / 255f) * 0.3f;
+                neighborCount++;
+            }
+            
+            // Average neighbor shadow for gradient
+            if (neighborCount > 0)
+            {
+                neighborShadow /= neighborCount;
+            }
+            
+            // Blend base shadow with neighbor shadow for softer gradient
+            return MathHelper.Clamp(baseShadow + neighborShadow * 0.3f, 0f, 1f);
         }
         
         return 0f;
+    }
+    
+    private void InvalidateCache(int localX, int localY)
+    {
+        // Invalidate cache for this tile and all neighbors (AO depends on neighbors)
+        for (int dy = -1; dy <= 1; dy++)
+        {
+            for (int dx = -1; dx <= 1; dx++)
+            {
+                int x = localX + dx;
+                int y = localY + dy;
+                if (x >= 0 && x < Size && y >= 0 && y < Size)
+                {
+                    _aoCache[x, y] = -1f;
+                    _shadowCache[x, y] = -1f;
+                }
+            }
+        }
     }
     
     /// <summary>

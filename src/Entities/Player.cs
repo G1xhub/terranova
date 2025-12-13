@@ -33,8 +33,7 @@ public class Player : Entity
     private const float CoyoteTime = 0.1f;
     
     // Animation
-    private int _animFrame;
-    private float _animTimer;
+    private AnimationSystem _animationSystem;
     private bool _isMoving;
     
     // Effects
@@ -63,7 +62,62 @@ public class Player : Entity
         Inventory.AddItem(new Item(ItemType.Torch, 50));
         Inventory.AddItem(new Item(ItemType.Wood, 100));
         
+        // Initialize animation system
+        _animationSystem = new AnimationSystem();
+        InitializeAnimations();
+        
         _spawnPoint = position;
+    }
+    
+    private void InitializeAnimations()
+    {
+        const int frameWidth = 20;
+        const int frameHeight = 42;
+        
+        // Idle animation (3 frames, row 0)
+        var idleFrames = new Rectangle[3];
+        for (int i = 0; i < 3; i++)
+        {
+            idleFrames[i] = new Rectangle(i * frameWidth, 0 * frameHeight, frameWidth, frameHeight);
+        }
+        _animationSystem.AddAnimation(AnimationState.Idle, new Animation(idleFrames, 0.15f, true));
+        
+        // Walk animation (6 frames, row 1)
+        var walkFrames = new Rectangle[6];
+        for (int i = 0; i < 6; i++)
+        {
+            walkFrames[i] = new Rectangle(i * frameWidth, 1 * frameHeight, frameWidth, frameHeight);
+        }
+        _animationSystem.AddAnimation(AnimationState.Walk, new Animation(walkFrames, 0.1f, true));
+        
+        // Run animation (6 frames, row 2)
+        var runFrames = new Rectangle[6];
+        for (int i = 0; i < 6; i++)
+        {
+            runFrames[i] = new Rectangle(i * frameWidth, 2 * frameHeight, frameWidth, frameHeight);
+        }
+        _animationSystem.AddAnimation(AnimationState.Run, new Animation(runFrames, 0.08f, true));
+        
+        // Jump animation (2 frames, row 3)
+        var jumpFrames = new Rectangle[2];
+        for (int i = 0; i < 2; i++)
+        {
+            jumpFrames[i] = new Rectangle(i * frameWidth, 3 * frameHeight, frameWidth, frameHeight);
+        }
+        _animationSystem.AddAnimation(AnimationState.Jump, new Animation(jumpFrames, 0.2f, false));
+        
+        // Fall animation (1 frame, row 4)
+        var fallFrames = new Rectangle[1];
+        fallFrames[0] = new Rectangle(0, 4 * frameHeight, frameWidth, frameHeight);
+        _animationSystem.AddAnimation(AnimationState.Fall, new Animation(fallFrames, 0.2f, true));
+        
+        // Mining animation (3 frames, row 5)
+        var miningFrames = new Rectangle[3];
+        for (int i = 0; i < 3; i++)
+        {
+            miningFrames[i] = new Rectangle(i * frameWidth, 5 * frameHeight, frameWidth, frameHeight);
+        }
+        _animationSystem.AddAnimation(AnimationState.Mining, new Animation(miningFrames, 0.12f, true));
     }
     
     public void Update(GameTime gameTime, InputManager input, GameWorld world, ParticleSystem particles)
@@ -110,6 +164,7 @@ public class Player : Entity
         
         // Update animation
         UpdateAnimation(deltaTime);
+        _animationSystem.Update(deltaTime);
     }
     
     private void HandleMovement(InputManager input, float deltaTime)
@@ -397,6 +452,11 @@ public class Player : Entity
             TileType.CraftingTable => ItemType.CraftingTable,
             TileType.Furnace => ItemType.Furnace,
             TileType.Anvil => ItemType.Anvil,
+            TileType.Crystal => ItemType.Crystal,
+            TileType.BlueCrystal => ItemType.BlueCrystal,
+            TileType.RedCrystal => ItemType.RedCrystal,
+            TileType.Mushroom => ItemType.Mushroom,
+            TileType.GlowingMushroom => ItemType.GlowingMushroom,
             TileType.WoodPlatform => ItemType.WoodPlatform,
             _ => ItemType.None
         };
@@ -428,24 +488,33 @@ public class Player : Entity
     
     private void UpdateAnimation(float deltaTime)
     {
-        if (_isMoving && IsOnGround)
+        // Determine animation state based on player state
+        AnimationState newState;
+        
+        if (_miningTarget.HasValue)
         {
-            _animTimer += deltaTime;
-            if (_animTimer >= 0.1f)
-            {
-                _animTimer = 0;
-                _animFrame = (_animFrame + 1) % 4;
-            }
+            newState = AnimationState.Mining;
         }
         else if (!IsOnGround)
         {
-            _animFrame = 1; // Jump frame
+            newState = Velocity.Y < 0 ? AnimationState.Jump : AnimationState.Fall;
+        }
+        else if (_isMoving)
+        {
+            // Determine if running or walking based on speed
+            float speed = Math.Abs(Velocity.X);
+            newState = speed > 3.0f ? AnimationState.Run : AnimationState.Walk;
         }
         else
         {
-            _animFrame = 0; // Idle
-            _animTimer = 0;
+            newState = AnimationState.Idle;
         }
+        
+        // Update facing direction
+        _animationSystem.FacingRight = FacingRight;
+        
+        // Set animation state
+        _animationSystem.SetState(newState);
     }
     
     protected override void OnDeath()
@@ -487,13 +556,16 @@ public class Player : Entity
         TerraNovaGame.AgentLog("Player.Draw", "drawing", new { destRectX = destRect.X, destRectY = destRect.Y, destRectWidth = destRect.Width, destRectHeight = destRect.Height, PlayerSpriteNull = TextureManager.PlayerSprite == null }, "H2-sprite-null");
         // #endregion
         
+        // Get current animation frame
+        var sourceRect = _animationSystem.GetCurrentFrame();
+        
         // Flip sprite if facing left
-        var effects = FacingRight ? SpriteEffects.None : SpriteEffects.FlipHorizontally;
+        var effects = _animationSystem.FacingRight ? SpriteEffects.None : SpriteEffects.FlipHorizontally;
         
         spriteBatch.Draw(
-            TextureManager.PlayerSprite,
+            TextureManager.PlayerSpriteSheet,
             destRect,
-            null,
+            sourceRect,
             Color.White,
             0f,
             Vector2.Zero,

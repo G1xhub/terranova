@@ -21,6 +21,7 @@ public class TerraNovaGame : Game
     private GraphicsDeviceManager _graphics;
     private SpriteBatch _spriteBatch = null!;
     private RenderTarget2D _gameRenderTarget = null!;
+    private RenderTarget2D _postProcessRenderTarget = null!; // For post-processing
     
     // Core Systems
     private GameWorld _world = null!;
@@ -40,6 +41,8 @@ public class TerraNovaGame : Game
     
     // Heat-based color filters
     private Dictionary<(int x, int y), float> _heatInfluenceMap = new();
+    private float _heatUpdateTimer = 0f;
+    private const float HeatUpdateInterval = 0.1f; // Update every 0.1 seconds instead of every frame
     
     // Configuration
     public static GameConfig Config { get; private set; } = null!;
@@ -181,6 +184,7 @@ public class TerraNovaGame : Game
     protected override void UnloadContent()
     {
         _gameRenderTarget?.Dispose();
+        _postProcessRenderTarget?.Dispose();
         _lighting?.Dispose();
         TextureManager.Dispose();
         FontManager.Dispose();
@@ -225,24 +229,35 @@ public class TerraNovaGame : Game
             // Update events
             _events?.Update(gameTime);
             
-            // Update heat-based color filters (warm tones near fire sources)
-            UpdateHeatColorFilters(deltaTime);
-            _world.SetHeatInfluenceMap(_heatInfluenceMap);
+            // Update heat-based color filters (warm tones near fire sources) - throttled
+            _heatUpdateTimer += deltaTime;
+            if (_heatUpdateTimer >= HeatUpdateInterval)
+            {
+                UpdateHeatColorFilters(_heatUpdateTimer, _camera.VisibleArea);
+                _world.SetHeatInfluenceMap(_heatInfluenceMap);
+                _heatUpdateTimer = 0f;
+            }
             
             // Update lighting (only when needed)
             if (_world.LightingDirty)
             {
-                _lighting.Update(_dayTime, deltaTime);
+                _lighting.Update(_dayTime, deltaTime, _camera.VisibleArea);
                 _world.LightingDirty = false;
             }
             else
             {
                 // Still update for dynamic effects even if lighting isn't dirty
-                _lighting.Update(_dayTime, deltaTime);
+                _lighting.Update(_dayTime, deltaTime, _camera.VisibleArea);
             }
             
-            // Handle mining/building
-            HandleWorldInteraction();
+            // Handle mining/building (only if no menu is open)
+            if (!_ui.IsAnyMenuOpen)
+            {
+                HandleWorldInteraction();
+            }
+            
+            // Spawn atmospheric dust particles in well-lit areas for cozy feeling
+            SpawnAtmosphericParticles();
         }
         
         // Update UI
@@ -256,11 +271,13 @@ public class TerraNovaGame : Game
 
     protected override void Draw(GameTime gameTime)
     {
+        try
+    {
         // Render game to render target for pixel-perfect scaling
         GraphicsDevice.SetRenderTarget(_gameRenderTarget);
-        
-        // Determine background color - always start with sky color
-        // Underground background will be drawn in DrawBackground()
+            
+            // Determine background color - always start with sky color
+            // Underground background will be drawn in DrawBackground()
         GraphicsDevice.Clear(GetSkyColor());
         
         // #region agent log
@@ -299,10 +316,7 @@ public class TerraNovaGame : Game
         DrawCelestialBodies();
         
         // Draw world tiles (with particle system for heat effects)
-        _world.Draw(_spriteBatch, _camera, _particles);
-        
-        // Spawn atmospheric dust particles in well-lit areas for cozy feeling
-        SpawnAtmosphericParticles();
+        _world.Draw(_spriteBatch, _camera, gameTime, _particles);
         
         // Lighting overlay disabled - lighting applied per-tile in Chunk.Draw
         // _lighting.Draw(_spriteBatch, _camera);
@@ -327,6 +341,24 @@ public class TerraNovaGame : Game
         
         _spriteBatch.End();
         
+        // Post-processing: Apply color grading
+        GraphicsDevice.SetRenderTarget(_postProcessRenderTarget);
+        GraphicsDevice.Clear(Color.Black);
+        
+        _spriteBatch.Begin(
+            SpriteSortMode.Deferred,
+            BlendState.AlphaBlend,
+            SamplerState.PointClamp,
+            null,
+            null
+        );
+        
+        // Apply color grading based on time of day
+        Color colorGrade = GetColorGrading(_dayTime);
+        _spriteBatch.Draw(_gameRenderTarget, Vector2.Zero, colorGrade);
+        
+        _spriteBatch.End();
+        
         // Draw to screen
         GraphicsDevice.SetRenderTarget(null);
         GraphicsDevice.Clear(Color.Black);
@@ -339,8 +371,8 @@ public class TerraNovaGame : Game
             null
         );
         
-        // Draw scaled game
-        DrawScaledGame();
+        // Draw scaled game (with post-processing applied)
+        DrawScaledGamePostProcessed();
         
         _spriteBatch.End();
         
@@ -362,6 +394,16 @@ public class TerraNovaGame : Game
         _spriteBatch.End();
         
         base.Draw(gameTime);
+        }
+        catch (Exception ex)
+        {
+            AgentLog("TerraNovaGame.Draw", "exception", new { 
+                message = ex.Message, 
+                stackTrace = ex.StackTrace,
+                innerException = ex.InnerException?.Message 
+            }, "H1-freeze-debug");
+            throw;
+        }
     }
 
     private void HandleGlobalInput()
@@ -477,16 +519,28 @@ public class TerraNovaGame : Game
         }
     }
 
-    private void UpdateHeatColorFilters(float deltaTime)
+    private void UpdateHeatColorFilters(float deltaTime, Rectangle visibleArea)
     {
-        // Update heat influence map based on nearby fire sources
-        _heatInfluenceMap.Clear();
+        // Only update heat influence for visible area (with padding for off-screen effects)
+        int padding = 10; // Tiles of padding
+        int startTileX = Math.Max(0, (visibleArea.Left / GameConfig.TileSize) - padding);
+        int startTileY = Math.Max(0, (visibleArea.Top / GameConfig.TileSize) - padding);
+        int endTileX = Math.Min(_world.Width - 1, (visibleArea.Right / GameConfig.TileSize) + padding);
+        int endTileY = Math.Min(_world.Height - 1, (visibleArea.Bottom / GameConfig.TileSize) + padding);
         
-        var visible = _camera.VisibleArea;
-        int startTileX = Math.Max(0, visible.Left / GameConfig.TileSize - 5);
-        int startTileY = Math.Max(0, visible.Top / GameConfig.TileSize - 5);
-        int endTileX = Math.Min(_world.Width - 1, visible.Right / GameConfig.TileSize + 5);
-        int endTileY = Math.Min(_world.Height - 1, visible.Bottom / GameConfig.TileSize + 5);
+        // Remove heat influence outside visible area
+        var keysToRemove = new List<(int x, int y)>();
+        foreach (var key in _heatInfluenceMap.Keys)
+        {
+            if (key.x < startTileX || key.x > endTileX || key.y < startTileY || key.y > endTileY)
+            {
+                keysToRemove.Add(key);
+            }
+        }
+        foreach (var key in keysToRemove)
+        {
+            _heatInfluenceMap.Remove(key);
+        }
         
         // Find fire sources and calculate heat influence
         for (int y = startTileY; y <= endTileY; y++)
@@ -499,17 +553,19 @@ public class TerraNovaGame : Game
                     // Calculate heat influence radius
                     int heatRadius = tile == TileType.Lava ? 8 : (tile == TileType.Furnace ? 6 : 4);
                     
-                    // Spread heat influence
-                    for (int dy = -heatRadius; dy <= heatRadius; dy++)
+                    // Apply heat influence to surrounding tiles (clamped to visible area)
+                    int radius = (int)heatRadius;
+                    int influenceStartX = Math.Max(startTileX, x - radius);
+                    int influenceStartY = Math.Max(startTileY, y - radius);
+                    int influenceEndX = Math.Min(endTileX, x + radius);
+                    int influenceEndY = Math.Min(endTileY, y + radius);
+                    
+                    for (int ty = influenceStartY; ty <= influenceEndY; ty++)
                     {
-                        for (int dx = -heatRadius; dx <= heatRadius; dx++)
+                        for (int tx = influenceStartX; tx <= influenceEndX; tx++)
                         {
-                            int tx = x + dx;
-                            int ty = y + dy;
-                            
-                            if (tx < 0 || tx >= _world.Width || ty < 0 || ty >= _world.Height)
-                                continue;
-                            
+                            int dx = tx - x;
+                            int dy = ty - y;
                             float distance = MathF.Sqrt(dx * dx + dy * dy);
                             if (distance > heatRadius) continue;
                             
@@ -533,31 +589,56 @@ public class TerraNovaGame : Game
     
     private void SpawnAtmosphericParticles()
     {
-        // Spawn atmospheric dust particles in well-lit areas for cozy feeling
-        if (_particles == null || Random.Shared.NextSingle() > 0.02f) return; // 2% chance per frame
+        // Spawn atmospheric particles (dust, pollen, etc.) for better atmosphere
+        if (_particles == null) return;
         
         var visible = _camera.VisibleArea;
-        int centerX = visible.Left + visible.Width / 2;
-        int centerY = visible.Top + visible.Height / 2;
         
-        // Check light level at center
-        int tileX = centerX / GameConfig.TileSize;
-        int tileY = centerY / GameConfig.TileSize;
-        
-        if (tileX >= 0 && tileX < _world.Width && tileY >= 0 && tileY < _world.Height)
+        // Spawn dust particles (more frequent)
+        if (Random.Shared.NextSingle() < 0.03f) // 3% chance per frame
         {
-            var lightColor = _lighting.GetLightColor(tileX, tileY);
-            float brightness = (lightColor.R + lightColor.G + lightColor.B) / (3f * 255f);
+            int centerX = visible.Left + visible.Width / 2;
+            int centerY = visible.Top + visible.Height / 2;
             
-            // Only spawn in well-lit areas (brightness > 0.3)
-            if (brightness > 0.3f)
+            // Check light level at center
+            int tileX = centerX / GameConfig.TileSize;
+            int tileY = centerY / GameConfig.TileSize;
+            
+            if (tileX >= 0 && tileX < _world.Width && tileY >= 0 && tileY < _world.Height)
             {
-                var spawnPos = new Vector2(
-                    centerX + (float)(Random.Shared.NextDouble() * visible.Width - visible.Width / 2),
-                    centerY + (float)(Random.Shared.NextDouble() * visible.Height - visible.Height / 2)
-                );
-                _particles.SpawnAtmosphericDust(spawnPos, 2, brightness);
+                var lightColor = _lighting.GetLightColor(tileX, tileY);
+                float brightness = (lightColor.R + lightColor.G + lightColor.B) / (3f * 255f);
+                
+                // Spawn in well-lit areas (brightness > 0.25)
+                if (brightness > 0.25f)
+                {
+                    var spawnPos = new Vector2(
+                        centerX + (float)(Random.Shared.NextDouble() * visible.Width - visible.Width / 2),
+                        centerY + (float)(Random.Shared.NextDouble() * visible.Height - visible.Height / 2)
+                    );
+                    _particles.SpawnAtmosphericDust(spawnPos, 3, brightness); // Increased count from 2 to 3
+                }
             }
+        }
+        
+        // Spawn pollen particles during day (less frequent, more visible)
+        if (IsDaytime() && Random.Shared.NextSingle() < 0.01f) // 1% chance per frame during day
+        {
+            var spawnPos = new Vector2(
+                visible.Left + (float)(Random.Shared.NextDouble() * visible.Width),
+                visible.Top + (float)(Random.Shared.NextDouble() * visible.Height)
+            );
+            _particles.SpawnPollen(spawnPos);
+        }
+        
+        // Spawn wind particles for leaves/grass (subtle movement)
+        if (Random.Shared.NextSingle() < 0.015f) // 1.5% chance per frame
+        {
+            var spawnPos = new Vector2(
+                visible.Left + (float)(Random.Shared.NextDouble() * visible.Width),
+                visible.Top + (float)(Random.Shared.NextDouble() * visible.Height * 0.3f) // Upper part of screen
+            );
+            _particles.SpawnWindParticle(spawnPos);
         }
     }
 
@@ -809,48 +890,46 @@ public class TerraNovaGame : Game
             }
         }
         
-        // Draw additional depth layers (further back, darker, slower parallax)
-        for (int layer = 1; layer <= 2; layer++)
+        // Draw one additional depth layer (further back, darker, slower parallax) - reduced from 2 to 1
+        float layerParallax = 0.02f; // Slower parallax
+        float layerOpacity = 0.15f * (1f - depthFactor * 0.5f);
+        float layerDarkness = 0.85f;
+        
+        parallaxOffsetX = -_camera.Position.X * layerParallax;
+        
+        // Use larger tile steps (4 instead of 2) for better performance
+        for (int tileY = startTileY; tileY <= endTileY; tileY += 4)
         {
-            float layerParallax = Math.Max(0.01f, 0.03f - layer * 0.01f); // Ensure positive parallax
-            float layerOpacity = Math.Max(0f, (0.2f - layer * 0.05f) * (1f - depthFactor * 0.5f));
-            float layerDarkness = 0.8f + layer * 0.1f;
+            int depthBelowSurface = tileY - Config.SurfaceLevel;
+            if (depthBelowSurface < 0) continue;
             
-            parallaxOffsetX = -_camera.Position.X * layerParallax;
+            TileType bgTileType = depthBelowSurface < 20 ? TileType.Dirt : TileType.Stone;
             
-            for (int tileY = startTileY; tileY <= endTileY; tileY += 2) // Less frequent for performance
+            for (int tileX = startTileX; tileX <= endTileX; tileX += 4)
             {
-                int depthBelowSurface = tileY - Config.SurfaceLevel;
-                if (depthBelowSurface < 0) continue;
+                var frontTile = _world.GetTile(tileX, tileY);
+                if (TileProperties.IsSolid(frontTile))
+                    continue;
                 
-                TileType bgTileType = depthBelowSurface < 20 ? TileType.Dirt : TileType.Stone;
+                int worldX = (int)(tileX * tileSize + parallaxOffsetX);
+                int worldY = tileY * tileSize;
                 
-                for (int tileX = startTileX; tileX <= endTileX; tileX += 2)
+                if (worldX + tileSize < visible.Left || worldX > visible.Right ||
+                    worldY + tileSize < visible.Top || worldY > visible.Bottom)
+                    continue;
+                
+                try
                 {
-                    var frontTile = _world.GetTile(tileX, tileY);
-                    if (TileProperties.IsSolid(frontTile))
-                        continue;
+                    var sourceRect = TextureManager.GetTileRect(bgTileType);
+                    var destRect = new Rectangle(worldX, worldY, tileSize, tileSize);
+                    Color tileColor = Color.White * layerOpacity * layerDarkness;
                     
-                    int worldX = (int)(tileX * tileSize + parallaxOffsetX);
-                    int worldY = tileY * tileSize;
-                    
-                    if (worldX + tileSize < visible.Left || worldX > visible.Right ||
-                        worldY + tileSize < visible.Top || worldY > visible.Bottom)
-                        continue;
-                    
-                    try
-                    {
-                        var sourceRect = TextureManager.GetTileRect(bgTileType);
-                        var destRect = new Rectangle(worldX, worldY, tileSize, tileSize);
-                        Color tileColor = Color.White * layerOpacity * layerDarkness;
-                        
-                        _spriteBatch.Draw(TextureManager.TileAtlas, destRect, sourceRect, tileColor);
-                    }
-                    catch
-                    {
-                        // Skip this tile if there's an error
-                        continue;
-                    }
+                    _spriteBatch.Draw(TextureManager.TileAtlas, destRect, sourceRect, tileColor);
+                }
+                catch
+                {
+                    // Skip this tile if there's an error
+                    continue;
                 }
             }
         }
@@ -1022,6 +1101,97 @@ public class TerraNovaGame : Game
             Color.White
         );
     }
+    
+    private void DrawScaledGamePostProcessed()
+    {
+        // Calculate scaling to fit window while maintaining aspect ratio
+        float scaleX = (float)GraphicsDevice.Viewport.Width / _postProcessRenderTarget.Width;
+        float scaleY = (float)GraphicsDevice.Viewport.Height / _postProcessRenderTarget.Height;
+        float scale = Math.Min(scaleX, scaleY);
+        
+        int scaledWidth = (int)(_postProcessRenderTarget.Width * scale);
+        int scaledHeight = (int)(_postProcessRenderTarget.Height * scale);
+        int x = (GraphicsDevice.Viewport.Width - scaledWidth) / 2;
+        int y = (GraphicsDevice.Viewport.Height - scaledHeight) / 2;
+        
+        _spriteBatch.Draw(
+            _postProcessRenderTarget,
+            new Rectangle(x, y, scaledWidth, scaledHeight),
+            Color.White
+        );
+    }
+    
+    private Color GetColorGrading(float dayTime)
+    {
+        // Color grading based on time of day
+        // dayTime: 0.0 = midnight, 0.25 = 6 AM, 0.5 = noon, 0.75 = 6 PM, 1.0 = midnight
+        
+        // Normalize dayTime to 0-1 cycle
+        float normalizedTime = dayTime % 1f;
+        
+        // Calculate brightness and color temperature
+        float brightness = 1f;
+        float saturation = 1f;
+        Color colorTint = Color.White;
+        
+        if (normalizedTime < 0.25f) // Night (midnight to 6 AM)
+        {
+            float nightFactor = normalizedTime / 0.25f; // 0 at midnight, 1 at 6 AM
+            brightness = 0.4f + nightFactor * 0.3f; // 0.4 to 0.7
+            saturation = 0.7f + nightFactor * 0.2f; // 0.7 to 0.9
+            colorTint = Color.Lerp(
+                new Color(100, 120, 180), // Cool blue at midnight
+                new Color(150, 160, 200), // Warmer blue at dawn
+                nightFactor
+            );
+        }
+        else if (normalizedTime < 0.5f) // Morning (6 AM to noon)
+        {
+            float morningFactor = (normalizedTime - 0.25f) / 0.25f; // 0 at 6 AM, 1 at noon
+            brightness = 0.7f + morningFactor * 0.3f; // 0.7 to 1.0
+            saturation = 0.9f + morningFactor * 0.1f; // 0.9 to 1.0
+            colorTint = Color.Lerp(
+                new Color(200, 210, 240), // Warm blue at dawn
+                new Color(255, 255, 255), // Pure white at noon
+                morningFactor
+            );
+        }
+        else if (normalizedTime < 0.75f) // Afternoon (noon to 6 PM)
+        {
+            float afternoonFactor = (normalizedTime - 0.5f) / 0.25f; // 0 at noon, 1 at 6 PM
+            brightness = 1.0f - afternoonFactor * 0.2f; // 1.0 to 0.8
+            saturation = 1.0f - afternoonFactor * 0.1f; // 1.0 to 0.9
+            colorTint = Color.Lerp(
+                new Color(255, 255, 255), // Pure white at noon
+                new Color(255, 240, 220), // Warm orange at sunset
+                afternoonFactor
+            );
+        }
+        else // Evening/Night (6 PM to midnight)
+        {
+            float eveningFactor = (normalizedTime - 0.75f) / 0.25f; // 0 at 6 PM, 1 at midnight
+            brightness = 0.8f - eveningFactor * 0.4f; // 0.8 to 0.4
+            saturation = 0.9f - eveningFactor * 0.2f; // 0.9 to 0.7
+            colorTint = Color.Lerp(
+                new Color(255, 200, 150), // Warm orange-red at sunset
+                new Color(100, 120, 180), // Cool blue at midnight
+                eveningFactor
+            );
+        }
+        
+        // Apply brightness and saturation
+        float r = MathHelper.Clamp(colorTint.R * brightness, 0, 255);
+        float g = MathHelper.Clamp(colorTint.G * brightness, 0, 255);
+        float b = MathHelper.Clamp(colorTint.B * brightness, 0, 255);
+        
+        // Apply saturation
+        float gray = (r + g + b) / 3f;
+        r = MathHelper.Lerp(gray, r, saturation);
+        g = MathHelper.Lerp(gray, g, saturation);
+        b = MathHelper.Lerp(gray, b, saturation);
+        
+        return new Color((int)r, (int)g, (int)b, 255);
+    }
 
     private void DrawDebugInfo()
     {
@@ -1059,6 +1229,17 @@ public class TerraNovaGame : Game
     {
         _gameRenderTarget?.Dispose();
         _gameRenderTarget = new RenderTarget2D(
+            GraphicsDevice,
+            Config.GameWidth,
+            Config.GameHeight,
+            false,
+            SurfaceFormat.Color,
+            DepthFormat.None
+        );
+        
+        // Create post-processing render target
+        _postProcessRenderTarget?.Dispose();
+        _postProcessRenderTarget = new RenderTarget2D(
             GraphicsDevice,
             Config.GameWidth,
             Config.GameHeight,

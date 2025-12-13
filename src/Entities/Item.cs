@@ -108,6 +108,19 @@ public enum ItemType
     GreaterHealingPotion = 402,
     ManaPotion = 410,
     
+    // Brewing materials
+    Crystal = 450,
+    BlueCrystal = 451,
+    RedCrystal = 452,
+    Mushroom = 453,
+    GlowingMushroom = 454,
+    
+    // Potions (brewed)
+    RegenerationPotion = 460,
+    SpeedPotion = 461,
+    StrengthPotion = 462,
+    NightVisionPotion = 463,
+    
     // Accessories
     HermesBoots = 500,
     CloudInABottle = 501,
@@ -174,6 +187,19 @@ public static class ItemProperties
         Register(ItemType.LesserHealingPotion, "Lesser Healing Potion", "Potion", 30, healAmount: 50);
         Register(ItemType.HealingPotion, "Healing Potion", "Potion", 30, healAmount: 100);
         Register(ItemType.ManaPotion, "Mana Potion", "Potion", 30, manaAmount: 50);
+        
+        // Brewing materials
+        Register(ItemType.Crystal, "Crystal", "Material", 99);
+        Register(ItemType.BlueCrystal, "Blue Crystal", "Material", 99);
+        Register(ItemType.RedCrystal, "Red Crystal", "Material", 99);
+        Register(ItemType.Mushroom, "Mushroom", "Material", 99);
+        Register(ItemType.GlowingMushroom, "Glowing Mushroom", "Material", 99);
+        
+        // Brewed potions
+        Register(ItemType.RegenerationPotion, "Regeneration Potion", "Potion", 30, healAmount: 0); // Heals over time
+        Register(ItemType.SpeedPotion, "Speed Potion", "Potion", 30);
+        Register(ItemType.StrengthPotion, "Strength Potion", "Potion", 30);
+        Register(ItemType.NightVisionPotion, "Night Vision Potion", "Potion", 30);
     }
     
     private static void Register(ItemType type, string name, string category, int maxStack, 
