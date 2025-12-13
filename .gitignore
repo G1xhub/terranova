@@ -45,3 +45,11 @@ config.json
 # Saves
 saves/
 
+# Large files
+*.zip
+*.7z
+*.rar
+
+# Cursor IDE
+.cursor/
+
