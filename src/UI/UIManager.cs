@@ -366,20 +366,56 @@ public class UIManager
     
     private void DrawTimeDisplay(SpriteBatch spriteBatch, float dayTime)
     {
-        // Convert dayTime to hours
-        int hours = (int)(dayTime * 24);
-        int minutes = (int)((dayTime * 24 - hours) * 60);
+        // Calculate time
+        float hours = dayTime * 24f;
+        int hour = (int)hours;
+        int minute = (int)((hours - hour) * 60);
         
-        string timeText = $"{hours:D2}:{minutes:D2}";
-        string periodText = hours >= 12 ? "PM" : "AM";
+        string period = hour < 12 ? "AM" : "PM";
+        int displayHour = hour % 12;
+        if (displayHour == 0) displayHour = 12;
+        string timeString = $"{displayHour:D2}:{minute:D2} {period}";
         
-        // Position in top right
-        var timeSize = FontManager.DebugFont.MeasureString(timeText);
-        int x = _graphicsDevice.Viewport.Width - (int)timeSize.X - 60;
-        int y = 20;
+        // Determine time of day label and icon
+        bool isDaytime = dayTime >= 0.25f && dayTime <= 0.75f;
+        string timeOfDay = isDaytime ? "Day" : "Night";
+        Color timeColor = isDaytime ? new Color(255, 255, 150) : new Color(150, 150, 255);
         
-        FontManager.DebugFont.DrawText(spriteBatch, timeText, new Vector2(x, y), Color.White);
-        FontManager.DebugFont.DrawText(spriteBatch, periodText, new Vector2(x + timeSize.X + 5, y), Color.Gray);
+        // Draw time display in top-right corner
+        var font = FontManager.DebugFont;
+        if (font != null)
+        {
+            string displayText = $"{timeString} ({timeOfDay})";
+            var textSize = font.MeasureString(displayText);
+            int x = _graphicsDevice.Viewport.Width - (int)textSize.X - 20;
+            int y = 20;
+            
+            // Draw background with time-based color tint
+            var bgColor = new Color(0, 0, 0, 180);
+            DrawRect(spriteBatch, x - 5, y - 2, (int)textSize.X + 10, (int)textSize.Y + 4, bgColor);
+            
+            // Draw border with time color
+            DrawRectOutline(spriteBatch, x - 5, y - 2, (int)textSize.X + 10, (int)textSize.Y + 4, timeColor, 2);
+            
+            // Draw text with time color
+            font.DrawText(spriteBatch, displayText, new Vector2(x, y), timeColor);
+            
+            // Draw sun/moon icon
+            int iconSize = 20;
+            int iconX = x - iconSize - 10;
+            int iconY = y;
+            
+            if (isDaytime)
+            {
+                // Draw sun icon (circle)
+                DrawRect(spriteBatch, iconX, iconY, iconSize, iconSize, timeColor);
+            }
+            else
+            {
+                // Draw moon icon (crescent - simplified as circle)
+                DrawRect(spriteBatch, iconX, iconY, iconSize, iconSize, timeColor);
+            }
+        }
     }
     
     private void DrawRect(SpriteBatch spriteBatch, int x, int y, int width, int height, Color color)

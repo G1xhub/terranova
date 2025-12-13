@@ -1,6 +1,7 @@
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using TerraNova.Core;
+using TerraNova.Systems;
 
 namespace TerraNova.World;
 
@@ -32,9 +33,49 @@ public class GameWorld
     // Generation
     private WorldGenerator? _generator;
     
+    // Lighting system reference
+    private LightingSystem? _lightingSystem;
+    
+    // Heat influence map (for warm color filters)
+    private Dictionary<(int x, int y), float>? _heatInfluenceMap;
+    
+    // Biome data (per column, stored by WorldGenerator)
+    private BiomeType[]? _biomes;
+    
     // State
     public bool LightingDirty { get; set; } = true;
     public int LoadedChunkCount => _loadedChunks.Count;
+    
+    public void SetLightingSystem(LightingSystem lightingSystem)
+    {
+        _lightingSystem = lightingSystem;
+    }
+    
+    public LightingSystem? GetLightingSystem() => _lightingSystem;
+    
+    public void SetHeatInfluenceMap(Dictionary<(int x, int y), float> heatMap)
+    {
+        _heatInfluenceMap = heatMap;
+    }
+    
+    public float GetHeatInfluence(int tileX, int tileY)
+    {
+        return _heatInfluenceMap?.TryGetValue((tileX, tileY), out var influence) == true ? influence : 0f;
+    }
+    
+    public void SetBiomes(BiomeType[] biomes)
+    {
+        _biomes = biomes;
+    }
+    
+    public BiomeType GetBiomeAt(int x, int y)
+    {
+        if (_biomes == null || x < 0 || x >= Width)
+            return BiomeType.Forest;
+        
+        // Use surface biome for the column
+        return _biomes[x];
+    }
     
     // Load distance in chunks
     private const int LoadDistance = 4;
@@ -295,7 +336,7 @@ public class GameWorld
     /// <summary>
     /// Draw visible chunks
     /// </summary>
-    public void Draw(SpriteBatch spriteBatch, Camera2D camera)
+    public void Draw(SpriteBatch spriteBatch, Camera2D camera, ParticleSystem? particles = null)
     {
         // Calculate visible chunk range
         var visible = camera.VisibleArea;
@@ -318,12 +359,50 @@ public class GameWorld
         }, "H3-camera-visible");
         // #endregion
         
-        // Draw chunks back to front
+        // Draw chunks back to front and spawn heat particles
         for (int cy = startChunkY; cy <= endChunkY; cy++)
         {
             for (int cx = startChunkX; cx <= endChunkX; cx++)
             {
-                _chunks[cx, cy].Draw(spriteBatch, camera);
+                _chunks[cx, cy].Draw(spriteBatch, camera, _lightingSystem, this);
+                
+                // Spawn heat particles for fire sources in visible chunks
+                if (particles != null)
+                {
+                    SpawnHeatParticlesForChunk(_chunks[cx, cy], particles, visible);
+                }
+            }
+        }
+    }
+    
+    private void SpawnHeatParticlesForChunk(Chunk chunk, ParticleSystem particles, Rectangle visibleArea)
+    {
+        // Only spawn particles occasionally to avoid performance issues
+        if (Random.Shared.NextSingle() > 0.1f) return; // 10% chance per frame
+        
+        // Check tiles in chunk for fire sources
+        for (int y = 0; y < Chunk.Size; y++)
+        {
+            for (int x = 0; x < Chunk.Size; x++)
+            {
+                int worldX = chunk.TileStartX + x;
+                int worldY = chunk.TileStartY + y;
+                
+                // Check if tile is in visible area
+                int pixelX = worldX * GameConfig.TileSize;
+                int pixelY = worldY * GameConfig.TileSize;
+                if (!visibleArea.Intersects(new Rectangle(pixelX, pixelY, GameConfig.TileSize, GameConfig.TileSize)))
+                    continue;
+                
+                var tile = GetTile(worldX, worldY);
+                if (tile == TileType.Furnace || tile == TileType.Lava)
+                {
+                    var worldPos = new Vector2(
+                        pixelX + GameConfig.TileSize / 2,
+                        pixelY + GameConfig.TileSize / 2
+                    );
+                    particles.SpawnHeatParticles(worldPos, tile, 2); // Spawn 2 heat particles
+                }
             }
         }
     }

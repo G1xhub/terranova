@@ -1,6 +1,7 @@
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using TerraNova.Core;
+using TerraNova.Systems;
 
 namespace TerraNova.World;
 
@@ -156,10 +157,88 @@ public class Chunk
         return (worldTileX - TileStartX, worldTileY - TileStartY);
     }
     
+    private void DrawGlowEffect(SpriteBatch spriteBatch, Rectangle destRect, TileType tile, int lightLevel, float lightFactor)
+    {
+        // Get glow color based on tile type
+        Color glowColor = GetGlowColor(tile);
+        
+        // Calculate glow intensity based on light level and current lighting
+        float glowIntensity = (lightLevel / 15f) * lightFactor * 0.7f; // Increased from 0.6f for more visible glow
+        glowIntensity = MathHelper.Clamp(glowIntensity, 0f, 1f);
+        
+        // Draw multiple glow layers for softer, more cozy effect
+        // Outer glow (larger, more transparent)
+        int outerGlowSize = GameConfig.TileSize + 8;
+        int outerGlowOffset = (outerGlowSize - GameConfig.TileSize) / 2;
+        var outerGlowRect = new Rectangle(
+            destRect.X - outerGlowOffset,
+            destRect.Y - outerGlowOffset,
+            outerGlowSize,
+            outerGlowSize
+        );
+        var outerGlowColor = glowColor * glowIntensity * 0.3f; // Soft outer halo
+        spriteBatch.Draw(TextureManager.Pixel, outerGlowRect, outerGlowColor);
+        
+        // Inner glow (smaller, more intense)
+        int innerGlowSize = GameConfig.TileSize + 4;
+        int innerGlowOffset = (innerGlowSize - GameConfig.TileSize) / 2;
+        var innerGlowRect = new Rectangle(
+            destRect.X - innerGlowOffset,
+            destRect.Y - innerGlowOffset,
+            innerGlowSize,
+            innerGlowSize
+        );
+        var innerGlowColor = glowColor * glowIntensity * 0.6f; // Brighter inner glow
+        spriteBatch.Draw(TextureManager.Pixel, innerGlowRect, innerGlowColor);
+    }
+    
+    private void DrawHeatEffect(SpriteBatch spriteBatch, Rectangle destRect, TileType tile)
+    {
+        // Draw heat distortion/wave effect around fire sources
+        // Create a gradient overlay that suggests heat rising
+        
+        Color heatColor = tile == TileType.Furnace 
+            ? new Color(255, 100, 30, 40) // Hot orange-red
+            : new Color(255, 150, 50, 50); // Bright orange for lava
+        
+        // Draw multiple layers for heat wave effect
+        for (int i = 0; i < 3; i++)
+        {
+            int heatSize = GameConfig.TileSize + 6 + i * 2;
+            int heatOffset = (heatSize - GameConfig.TileSize) / 2;
+            var heatRect = new Rectangle(
+                destRect.X - heatOffset,
+                destRect.Y - heatOffset - i * 2, // Slight upward offset for rising heat
+                heatSize,
+                heatSize
+            );
+            
+            float alpha = (0.15f - i * 0.05f);
+            var heatColorWithAlpha = heatColor * alpha;
+            spriteBatch.Draw(TextureManager.Pixel, heatRect, heatColorWithAlpha);
+        }
+    }
+    
+    private static Color GetGlowColor(TileType tile)
+    {
+        return tile switch
+        {
+            TileType.Torch => new Color(255, 210, 130), // Warmer, more cozy orange
+            TileType.Furnace => new Color(255, 130, 70), // Hotter orange-red for warmth
+            TileType.Lava => new Color(255, 170, 70), // Brighter, warmer orange
+            TileType.CopperOre => new Color(255, 190, 120), // Warmer copper glow
+            TileType.IronOre => new Color(210, 210, 230), // Slightly warmer gray-blue
+            TileType.GoldOre => new Color(255, 230, 120), // Warmer golden yellow
+            TileType.DiamondOre => new Color(120, 210, 255), // Slightly warmer blue-white
+            TileType.Coal => new Color(160, 160, 160), // Slightly warmer gray
+            _ => Color.White
+        };
+    }
+    
     /// <summary>
     /// Draw the chunk
     /// </summary>
-    public void Draw(SpriteBatch spriteBatch, Camera2D camera)
+    public void Draw(SpriteBatch spriteBatch, Camera2D camera, LightingSystem? lightingSystem = null, GameWorld? world = null)
     {
         // Early out if chunk is not visible
         if (!camera.IsVisible(Bounds))
@@ -186,14 +265,101 @@ public class Chunk
                 var sourceRect = TextureManager.GetTileRect(tile);
                 var destRect = new Rectangle(worldX, worldY, GameConfig.TileSize, GameConfig.TileSize);
                 
-                // Apply lighting
+                // Apply lighting with color
                 byte light = _lightLevels[x, y];
                 float lightFactor = light / 255f;
-                var color = new Color(lightFactor, lightFactor, lightFactor);
+                
+                // Get light color from lighting system if available
+                Color lightColor = lightingSystem?.GetLightColor(TileStartX + x, TileStartY + y) ?? Color.White;
+                
+                // Apply light color tint
+                var color = new Color(
+                    (byte)(lightColor.R * lightFactor),
+                    (byte)(lightColor.G * lightFactor),
+                    (byte)(lightColor.B * lightFactor)
+                );
+                
+                // Apply heat-based warm color filter
+                if (world != null)
+                {
+                    float heatInfluence = world.GetHeatInfluence(TileStartX + x, TileStartY + y);
+                    if (heatInfluence > 0.1f)
+                    {
+                        // Blend with warm tones (orange/red tint) for cozy feeling
+                        Color warmTint = new Color(255, 200, 150);
+                        color = Color.Lerp(color, warmTint, heatInfluence * 0.3f); // 30% max warm tint
+                    }
+                }
+                
+                // Apply ambient occlusion (soft shadows at corners and edges)
+                float ao = CalculateAmbientOcclusion(x, y);
+                color = Color.Lerp(color, Color.Black, ao * 0.15f); // Subtle darkening
+                
+                // Apply shadow under blocks (if there's air below)
+                float shadow = CalculateBlockShadow(x, y);
+                if (shadow > 0)
+                {
+                    color = Color.Lerp(color, Color.Black, shadow * 0.2f);
+                }
                 
                 spriteBatch.Draw(TextureManager.TileAtlas, destRect, sourceRect, color);
+                
+                // Draw glow effect for emissive tiles
+                int lightLevel = TileProperties.GetLightLevel(tile);
+                if (lightLevel > 0)
+                {
+                    DrawGlowEffect(spriteBatch, destRect, tile, lightLevel, lightFactor);
+                    
+                    // Draw heat visualization for fire sources
+                    if (tile == TileType.Furnace || tile == TileType.Lava)
+                    {
+                        DrawHeatEffect(spriteBatch, destRect, tile);
+                    }
+                }
             }
         }
+    }
+    
+    private float CalculateAmbientOcclusion(int localX, int localY)
+    {
+        // Calculate soft shadows at corners and edges for depth
+        float ao = 0f;
+        
+        // Check corners (diagonal neighbors)
+        if (GetTileLocal(localX - 1, localY - 1) != TileType.Air) ao += 0.3f;
+        if (GetTileLocal(localX + 1, localY - 1) != TileType.Air) ao += 0.3f;
+        if (GetTileLocal(localX - 1, localY + 1) != TileType.Air) ao += 0.3f;
+        if (GetTileLocal(localX + 1, localY + 1) != TileType.Air) ao += 0.3f;
+        
+        // Check edges (orthogonal neighbors)
+        if (GetTileLocal(localX - 1, localY) != TileType.Air) ao += 0.15f;
+        if (GetTileLocal(localX + 1, localY) != TileType.Air) ao += 0.15f;
+        if (GetTileLocal(localX, localY - 1) != TileType.Air) ao += 0.15f;
+        if (GetTileLocal(localX, localY + 1) != TileType.Air) ao += 0.15f;
+        
+        // Normalize and clamp
+        ao = MathHelper.Clamp(ao, 0f, 1f);
+        return ao;
+    }
+    
+    private float CalculateBlockShadow(int localX, int localY)
+    {
+        // Calculate shadow under blocks (if there's air below)
+        var currentTile = GetTileLocal(localX, localY);
+        if (!TileProperties.IsSolid(currentTile))
+            return 0f;
+        
+        // Check if there's air below
+        var tileBelow = GetTileLocal(localX, localY + 1);
+        if (tileBelow == TileType.Air)
+        {
+            // Shadow intensity based on light level
+            byte light = GetLightLocal(localX, localY);
+            float lightFactor = light / 255f;
+            return (1f - lightFactor) * 0.5f; // Stronger shadow in darker areas
+        }
+        
+        return 0f;
     }
     
     /// <summary>

@@ -89,7 +89,7 @@ public static class TileProperties
         Set(TileType.Coal, true, 2f, TileType.Coal, 0, "Coal");
         Set(TileType.Bedrock, true, float.MaxValue, TileType.Air, 0, "Bedrock");
         
-        Set(TileType.Torch, false, 0f, TileType.Torch, 12, "Torch");
+        Set(TileType.Torch, false, 0f, TileType.Torch, 15, "Torch"); // Increased light level for better range
         Set(TileType.CraftingTable, true, 1.5f, TileType.CraftingTable, 0, "Crafting Table");
         Set(TileType.Chest, true, 1f, TileType.Chest, 0, "Chest");
         Set(TileType.Furnace, true, 2f, TileType.Furnace, 8, "Furnace");

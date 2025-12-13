@@ -81,6 +81,12 @@ public class WorldGenerator
         // Phase 7: Final pass (cleanup, validation)
         FinalPass();
         
+        // Store biome data in world
+        if (_biomes != null)
+        {
+            _world.SetBiomes(_biomes);
+        }
+        
         Console.WriteLine("World generation complete!");
     }
     

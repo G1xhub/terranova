@@ -244,7 +244,29 @@ public class Player : Entity
         
         // Progress mining - use deltaTime instead of fixed 1/60
         float deltaTime = 1f / 60f; // Approximate, should be passed from Update
-        _miningProgress += (miningPower / hardness) * BaseMiningSpeed * deltaTime;
+        
+        // Calculate mining progress - ensure it works even with low mining power
+        float progressPerSecond = (miningPower / hardness) * BaseMiningSpeed;
+        _miningProgress += progressPerSecond * deltaTime;
+        
+        // #region agent log
+        TerraNovaGame.AgentLog("Player.Mine", "mining-calculation", new {
+            miningPower,
+            hardness,
+            progressPerSecond,
+            deltaTime,
+            progressBefore = _miningProgress - (progressPerSecond * deltaTime),
+            progressAfter = _miningProgress,
+            baseMiningSpeed = BaseMiningSpeed
+        }, "H4-mining-calculation");
+        // #endregion
+        
+        // Spawn mining particles based on progress
+        var worldPos = new Vector2(
+            tileX * GameConfig.TileSize + GameConfig.TileSize / 2,
+            tileY * GameConfig.TileSize + GameConfig.TileSize / 2
+        );
+        particles.SpawnMiningParticles(worldPos, tile, _miningProgress);
         
         // #region agent log
         TerraNovaGame.AgentLog("Player.Mine", "progress", new {
@@ -334,10 +356,10 @@ public class Player : Entity
         Inventory.RemoveItem(SelectedSlot, 1);
     }
     
-    private float GetMiningPower()
+    public float GetMiningPower()
     {
         var item = Inventory.GetItem(SelectedSlot);
-        if (item == null) return 1f;
+        if (item == null) return 1f; // Base mining power without tool
         
         // Tool mining power
         return item.Type switch

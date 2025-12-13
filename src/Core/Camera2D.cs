@@ -21,6 +21,8 @@ public class Camera2D
     private float _shakeDuration;
     private float _shakeTimer;
     private Vector2 _shakeOffset;
+    private ShakeType _shakeType = ShakeType.Normal;
+    private float _shakeFrequency = 1f; // Shakes per second
     
     // Following
     private Entity? _target;
@@ -185,32 +187,106 @@ public class Camera2D
         _targetPosition.Y = MathHelper.Clamp(_targetPosition.Y, _bounds.Value.Top + halfHeight, _bounds.Value.Bottom - halfHeight);
     }
     
-    public void Shake(float intensity, float duration)
+    public void Shake(float intensity, float duration, ShakeType type = ShakeType.Normal)
     {
-        _shakeIntensity = intensity;
-        _shakeDuration = duration;
-        _shakeTimer = duration;
+        // If new shake is stronger, override current
+        if (intensity > _shakeIntensity || _shakeTimer <= 0)
+        {
+            _shakeIntensity = intensity;
+            _shakeDuration = duration;
+            _shakeTimer = duration;
+            _shakeType = type;
+            
+            // Adjust frequency based on type
+            _shakeFrequency = type switch
+            {
+                ShakeType.Light => 0.5f,
+                ShakeType.Normal => 1f,
+                ShakeType.Strong => 2f,
+                ShakeType.Violent => 3f,
+                _ => 1f
+            };
+        }
     }
+    
+    // Convenience methods for common shake types
+    public void ShakeLight(float duration = 0.2f) => Shake(2f, duration, ShakeType.Light);
+    public void ShakeNormal(float duration = 0.3f) => Shake(5f, duration, ShakeType.Normal);
+    public void ShakeStrong(float duration = 0.5f) => Shake(10f, duration, ShakeType.Strong);
+    public void ShakeViolent(float duration = 0.8f) => Shake(20f, duration, ShakeType.Violent);
+    
+    // Specific event shakes
+    public void ShakeExplosion(float intensity = 15f) => Shake(intensity, 0.4f, ShakeType.Strong);
+    public void ShakeBossHit(float intensity = 12f) => Shake(intensity, 0.3f, ShakeType.Strong);
+    public void ShakeMining(float intensity = 1f) => Shake(intensity, 0.1f, ShakeType.Light);
+    
+    private float _shakeTime = 0f;
     
     private void UpdateShake(float deltaTime)
     {
         if (_shakeTimer > 0)
         {
             _shakeTimer -= deltaTime;
+            _shakeTime += deltaTime * _shakeFrequency;
             
             // Calculate shake with decay
             float progress = _shakeTimer / _shakeDuration;
             float currentIntensity = _shakeIntensity * progress;
             
-            _shakeOffset = new Vector2(
-                (float)(Random.Shared.NextDouble() * 2 - 1) * currentIntensity,
-                (float)(Random.Shared.NextDouble() * 2 - 1) * currentIntensity
-            );
+            // Different shake patterns based on type
+            Vector2 offset = _shakeType switch
+            {
+                ShakeType.Light => GenerateLightShake(currentIntensity),
+                ShakeType.Normal => GenerateNormalShake(currentIntensity),
+                ShakeType.Strong => GenerateStrongShake(currentIntensity, _shakeTime),
+                ShakeType.Violent => GenerateViolentShake(currentIntensity, _shakeTime),
+                _ => GenerateNormalShake(currentIntensity)
+            };
+            
+            _shakeOffset = offset;
         }
         else
         {
             _shakeOffset = Vector2.Zero;
+            _shakeTime = 0f;
         }
+    }
+    
+    private Vector2 GenerateLightShake(float intensity)
+    {
+        return new Vector2(
+            (float)(Random.Shared.NextDouble() * 2 - 1) * intensity * 0.5f,
+            (float)(Random.Shared.NextDouble() * 2 - 1) * intensity * 0.5f
+        );
+    }
+    
+    private Vector2 GenerateNormalShake(float intensity)
+    {
+        return new Vector2(
+            (float)(Random.Shared.NextDouble() * 2 - 1) * intensity,
+            (float)(Random.Shared.NextDouble() * 2 - 1) * intensity
+        );
+    }
+    
+    private Vector2 GenerateStrongShake(float intensity, float time)
+    {
+        // More directional, with some sine wave component
+        float angle = time * 2f;
+        return new Vector2(
+            (float)(Math.Sin(angle) * intensity * 0.7f + (Random.Shared.NextDouble() * 2 - 1) * intensity * 0.3f),
+            (float)(Math.Cos(angle * 1.3f) * intensity * 0.7f + (Random.Shared.NextDouble() * 2 - 1) * intensity * 0.3f)
+        );
+    }
+    
+    private Vector2 GenerateViolentShake(float intensity, float time)
+    {
+        // Very chaotic shake with multiple frequency components
+        float angle1 = time * 3f;
+        float angle2 = time * 5f;
+        return new Vector2(
+            (float)(Math.Sin(angle1) * intensity * 0.5f + Math.Sin(angle2) * intensity * 0.3f + (Random.Shared.NextDouble() * 2 - 1) * intensity * 0.2f),
+            (float)(Math.Cos(angle1 * 1.1f) * intensity * 0.5f + Math.Cos(angle2 * 0.9f) * intensity * 0.3f + (Random.Shared.NextDouble() * 2 - 1) * intensity * 0.2f)
+        );
     }
     
     public void ZoomTo(float targetZoom)
@@ -264,4 +340,12 @@ public class Camera2D
     {
         return VisibleArea.Contains(point);
     }
+}
+
+public enum ShakeType
+{
+    Light,      // Subtle shake (mining, small impacts)
+    Normal,     // Standard shake (medium impacts)
+    Strong,     // Heavy shake (explosions, boss hits)
+    Violent     // Extreme shake (major events)
 }

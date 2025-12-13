@@ -247,56 +247,79 @@ public static class TextureManager
         // Top part is grass, bottom is dirt
         if (y < 4)
         {
-            // Grass blades at top
-            if (y == 0 && _random.NextDouble() > 0.5)
-                return Lighten(baseColor, 0.3f);
+            // Grass blades at top - clearer definition
+            if (y == 0)
+            {
+                // Individual grass blades with better contrast
+                if ((x + y * 2) % 3 == 0 && _random.NextDouble() > 0.4)
+                    return Lighten(baseColor, 0.4f);
+                if ((x * 2 + y) % 4 == 0 && _random.NextDouble() > 0.6)
+                    return Darken(baseColor, 0.2f);
+            }
             if (y < 3)
             {
-                float noise = (float)(_random.NextDouble() * 0.3 - 0.15);
-                return AddNoise(baseColor, noise);
+                // More structured variation
+                float noise = (float)(_random.NextDouble() * 0.4 - 0.2);
+                var color = AddNoise(baseColor, noise);
+                // Add subtle highlights
+                if ((x + y) % 5 == 0 && _random.NextDouble() > 0.7)
+                    color = Lighten(color, 0.15f);
+                return color;
             }
             return baseColor;
         }
         else
         {
-            // Dirt underneath
+            // Dirt underneath - clearer transition
             var dirtColor = new Color(139, 90, 43);
-            float noise = (float)(_random.NextDouble() * 0.2 - 0.1);
-            return AddNoise(dirtColor, noise);
+            float noise = (float)(_random.NextDouble() * 0.3 - 0.15);
+            var color = AddNoise(dirtColor, noise);
+            // Add pebbles for texture
+            if (_random.NextDouble() > 0.9)
+                color = Darken(color, 0.15f);
+            return color;
         }
     }
     
     private static Color GenerateDirtPixel(int x, int y, Color baseColor, Color darkColor, Color lightColor)
     {
-        float noise = (float)(_random.NextDouble() * 0.25 - 0.125);
+        float noise = (float)(_random.NextDouble() * 0.3 - 0.15);
         var color = AddNoise(baseColor, noise);
         
-        // Add some pebbles/variation
+        // More defined pebbles/variation with better contrast
+        if (_random.NextDouble() > 0.88)
+            color = Darken(color, 0.3f);
         if (_random.NextDouble() > 0.92)
-            color = Darken(color, 0.2f);
-        if (_random.NextDouble() > 0.95)
-            color = Lighten(color, 0.15f);
+            color = Lighten(color, 0.2f);
+        
+        // Add subtle texture pattern
+        if ((x * 2 + y * 3) % 7 == 0 && _random.NextDouble() > 0.7)
+            color = Darken(color, 0.1f);
             
         return color;
     }
     
     private static Color GenerateStonePixel(int x, int y, Color baseColor, Color darkColor, Color lightColor)
     {
-        // Create a rocky texture with cracks
-        float noise = (float)(_random.NextDouble() * 0.2 - 0.1);
+        // Create a rocky texture with clearer cracks and highlights
+        float noise = (float)(_random.NextDouble() * 0.25 - 0.125);
         var color = AddNoise(baseColor, noise);
         
-        // Add cracks/lines
-        if ((x + y) % 5 == 0 && _random.NextDouble() > 0.6)
-            color = Darken(color, 0.25f);
+        // More defined cracks/lines with better contrast
+        if ((x + y) % 5 == 0 && _random.NextDouble() > 0.5)
+            color = Darken(color, 0.35f);
+        if ((x * 2 + y * 3) % 6 == 0 && _random.NextDouble() > 0.65)
+            color = Darken(color, 0.2f);
         
-        // Add highlights
-        if ((x * 3 + y * 2) % 7 == 0 && _random.NextDouble() > 0.7)
+        // Stronger highlights for depth
+        if ((x * 3 + y * 2) % 7 == 0 && _random.NextDouble() > 0.6)
+            color = Lighten(color, 0.25f);
+        if ((x + y * 2) % 8 == 0 && _random.NextDouble() > 0.75)
             color = Lighten(color, 0.15f);
             
-        // Edge shading
+        // Better edge shading
         if (x == 0 || y == 0)
-            color = Lighten(color, 0.1f);
+            color = Lighten(color, 0.15f);
         if (x == TileSize - 1 || y == TileSize - 1)
             color = Darken(color, 0.1f);
             
@@ -305,41 +328,59 @@ public static class TextureManager
     
     private static Color GenerateSandPixel(int x, int y, Color baseColor, Color darkColor, Color lightColor)
     {
-        float noise = (float)(_random.NextDouble() * 0.15 - 0.075);
+        float noise = (float)(_random.NextDouble() * 0.2 - 0.1);
         var color = AddNoise(baseColor, noise);
         
-        // Sandy specks
-        if (_random.NextDouble() > 0.9)
-            color = Lighten(color, 0.2f);
+        // More defined sandy specks with better contrast
+        if (_random.NextDouble() > 0.85)
+            color = Lighten(color, 0.25f);
+        if (_random.NextDouble() > 0.92)
+            color = Darken(color, 0.15f);
+        
+        // Subtle wave pattern
+        if ((x + y * 2) % 6 == 0 && _random.NextDouble() > 0.7)
+            color = Lighten(color, 0.1f);
             
         return color;
     }
     
     private static Color GenerateSnowPixel(int x, int y, Color baseColor, Color darkColor, Color highlightColor)
     {
-        float noise = (float)(_random.NextDouble() * 0.1 - 0.05);
+        float noise = (float)(_random.NextDouble() * 0.15 - 0.075);
         var color = AddNoise(baseColor, noise);
         
-        // Sparkle effect
-        if (_random.NextDouble() > 0.95)
+        // Enhanced sparkle effect with better contrast
+        if (_random.NextDouble() > 0.92)
             color = Color.White;
+        if (_random.NextDouble() > 0.96)
+            color = new Color(240, 250, 255); // Slight blue tint
+        
+        // Subtle shadows for depth
+        if ((x + y) % 8 == 0 && _random.NextDouble() > 0.8)
+            color = Darken(color, 0.05f);
             
         return color;
     }
     
     private static Color GenerateWoodPixel(int x, int y, Color baseColor, Color darkColor, Color lightColor)
     {
-        // Wood grain pattern (vertical lines)
-        float grain = (float)Math.Sin(x * 0.8 + _random.NextDouble() * 0.5) * 0.15f;
+        // Wood grain pattern (vertical lines) - clearer definition
+        float grain = (float)Math.Sin(x * 0.8 + _random.NextDouble() * 0.5) * 0.2f;
         var color = AddNoise(baseColor, grain);
         
-        // Wood rings
+        // More defined wood rings
         if (x % 4 == 0)
+            color = Darken(color, 0.15f);
+        if (x % 8 == 0 && _random.NextDouble() > 0.6)
             color = Darken(color, 0.1f);
             
-        // Knots
-        if (_random.NextDouble() > 0.97)
-            color = Darken(baseColor, 0.3f);
+        // Clearer knots
+        if (_random.NextDouble() > 0.95)
+            color = Darken(baseColor, 0.4f);
+        
+        // Subtle highlights
+        if ((x * 2 + y) % 7 == 0 && _random.NextDouble() > 0.75)
+            color = Lighten(color, 0.1f);
             
         return color;
     }
@@ -598,8 +639,8 @@ public static class TextureManager
     {
         _parallaxLayers.Clear();
         
-        // Try load three layers, otherwise generate and save
-        for (int i = 0; i < 3; i++)
+        // Load more layers for better depth (5 layers instead of 3)
+        for (int i = 0; i < 5; i++)
         {
             string file = string.Format(ParallaxFileFormat, i);
             var tex = LoadOrGenerate(file, () => GenerateParallaxLayer(i));

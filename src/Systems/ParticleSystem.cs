@@ -56,10 +56,10 @@ public class ParticleSystem
     }
     
     public void SpawnParticle(Vector2 position, Vector2 velocity, Color color, 
-        float size = 4f, float lifetime = 1f, float gravity = 300f)
+        float size = 4f, float lifetime = 1f, float gravity = 300f, ParticleType type = ParticleType.Default)
     {
         var particle = GetParticle();
-        particle.Initialize(position, velocity, color, size, lifetime, gravity);
+        particle.Initialize(position, velocity, color, size, lifetime, gravity, type);
         _particles.Add(particle);
     }
     
@@ -88,6 +88,168 @@ public class ParticleSystem
             
             float size = (float)(Random.Shared.NextDouble() * 3 + 2);
             SpawnParticle(position, velocity, color, size, 0.8f);
+        }
+    }
+    
+    // New particle types
+    public void SpawnDustParticles(Vector2 position, int count = 8)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            float angle = (float)(Random.Shared.NextDouble() * Math.PI * 2);
+            float speed = (float)(Random.Shared.NextDouble() * 40 + 20);
+            var velocity = new Vector2(
+                (float)Math.Cos(angle) * speed,
+                (float)Math.Sin(angle) * speed
+            );
+            
+            var dustColor = new Color(180, 160, 140, 200);
+            float size = (float)(Random.Shared.NextDouble() * 2 + 1);
+            SpawnParticle(position, velocity, dustColor, size, 1.5f, 50f, ParticleType.Dust); // Slow fall
+        }
+    }
+    
+    public void SpawnSparkParticles(Vector2 position, int count = 12)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            float angle = (float)(Random.Shared.NextDouble() * Math.PI * 2);
+            float speed = (float)(Random.Shared.NextDouble() * 150 + 100);
+            var velocity = new Vector2(
+                (float)Math.Cos(angle) * speed,
+                (float)Math.Sin(angle) * speed
+            );
+            
+            var sparkColor = new Color(255, 220, 100);
+            float size = (float)(Random.Shared.NextDouble() * 2 + 1);
+            SpawnParticle(position, velocity, sparkColor, size, 0.3f, 200f, ParticleType.Spark);
+        }
+    }
+    
+    public void SpawnSmokeParticles(Vector2 position, int count = 6)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            float angle = (float)(Random.Shared.NextDouble() * Math.PI * 2);
+            float speed = (float)(Random.Shared.NextDouble() * 30 + 10);
+            var velocity = new Vector2(
+                (float)Math.Cos(angle) * speed,
+                (float)Math.Sin(angle) * speed - 20 // Upward drift
+            );
+            
+            var smokeColor = new Color(80, 80, 80, 150);
+            float size = (float)(Random.Shared.NextDouble() * 4 + 3);
+            SpawnParticle(position, velocity, smokeColor, size, 2.0f, -50f, ParticleType.Smoke); // Upward float
+        }
+    }
+    
+    public void SpawnMagicParticles(Vector2 position, Color magicColor, int count = 15)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            float angle = (float)(Random.Shared.NextDouble() * Math.PI * 2);
+            float speed = (float)(Random.Shared.NextDouble() * 80 + 40);
+            var velocity = new Vector2(
+                (float)Math.Cos(angle) * speed,
+                (float)Math.Sin(angle) * speed
+            );
+            
+            float size = (float)(Random.Shared.NextDouble() * 3 + 2);
+            SpawnParticle(position, velocity, magicColor, size, 1.2f, 0f, ParticleType.Magic); // No gravity
+        }
+    }
+    
+    public void SpawnExplosionParticles(Vector2 position, int count = 30)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            float angle = (float)(Random.Shared.NextDouble() * Math.PI * 2);
+            float speed = (float)(Random.Shared.NextDouble() * 200 + 100);
+            var velocity = new Vector2(
+                (float)Math.Cos(angle) * speed,
+                (float)Math.Sin(angle) * speed
+            );
+            
+            // Mix of fire colors
+            var colors = new[] { Color.Orange, Color.Red, Color.Yellow, new Color(255, 100, 0) };
+            var color = colors[Random.Shared.Next(colors.Length)];
+            
+            float size = (float)(Random.Shared.NextDouble() * 4 + 2);
+            SpawnParticle(position, velocity, color, size, 0.8f, 100f);
+        }
+        
+        // Add smoke
+        SpawnSmokeParticles(position, 10);
+    }
+    
+    public void SpawnMiningParticles(Vector2 position, TileType tileType, float miningProgress)
+    {
+        // Spawn particles based on mining progress
+        if (miningProgress > 0.3f && miningProgress < 0.7f)
+        {
+            // Small particles during mining
+            SpawnDustParticles(position, 2);
+        }
+        else if (miningProgress > 0.7f)
+        {
+            // More particles as it's about to break
+            SpawnDustParticles(position, 4);
+            if (Random.Shared.NextSingle() > 0.7f)
+            {
+                SpawnSparkParticles(position, 3);
+            }
+        }
+    }
+    
+    public void SpawnHeatParticles(Vector2 position, TileType sourceType, int count = 5)
+    {
+        // Spawn heat particles for fire sources (Furnace, Lava)
+        for (int i = 0; i < count; i++)
+        {
+            float angle = (float)(Random.Shared.NextDouble() * Math.PI * 2);
+            float speed = (float)(Random.Shared.NextDouble() * 20 + 10);
+            var velocity = new Vector2(
+                (float)Math.Cos(angle) * speed * 0.3f, // Mostly upward
+                (float)Math.Sin(angle) * speed - 30 // Strong upward movement
+            );
+            
+            // Warm colors: red, orange, yellow gradient
+            var heatColors = new[] { 
+                new Color(255, 100, 50),   // Hot red
+                new Color(255, 150, 70),   // Orange
+                new Color(255, 200, 100)   // Warm yellow
+            };
+            var heatColor = heatColors[Random.Shared.Next(heatColors.Length)];
+            
+            float size = (float)(Random.Shared.NextDouble() * 2 + 1);
+            float lifetime = (float)(Random.Shared.NextDouble() * 0.8 + 0.5);
+            SpawnParticle(position, velocity, heatColor, size, lifetime, -50f, ParticleType.Smoke); // Negative gravity = upward
+        }
+    }
+    
+    public void SpawnAtmosphericDust(Vector2 position, int count = 3, float brightness = 0.5f)
+    {
+        // Spawn atmospheric dust particles for cozy feeling
+        for (int i = 0; i < count; i++)
+        {
+            float angle = (float)(Random.Shared.NextDouble() * Math.PI * 2);
+            float speed = (float)(Random.Shared.NextDouble() * 15 + 5);
+            var velocity = new Vector2(
+                (float)Math.Cos(angle) * speed * 0.5f,
+                (float)Math.Sin(angle) * speed * 0.3f
+            );
+            
+            // Warm, soft dust colors
+            var dustColors = new[] {
+                new Color((byte)220, (byte)200, (byte)180, (byte)(180 * brightness)), // Warm beige
+                new Color((byte)240, (byte)220, (byte)200, (byte)(160 * brightness)), // Light warm
+                new Color((byte)200, (byte)180, (byte)160, (byte)(200 * brightness))  // Soft brown
+            };
+            var dustColor = dustColors[Random.Shared.Next(dustColors.Length)];
+            
+            float size = (float)(Random.Shared.NextDouble() * 1.5 + 0.5);
+            float lifetime = (float)(Random.Shared.NextDouble() * 3 + 2); // Longer lifetime for gentle movement
+            SpawnParticle(position, velocity, dustColor, size, lifetime, 20f, ParticleType.Dust); // Slow fall
         }
     }
     
@@ -150,27 +312,46 @@ public class Particle
     public Vector2 Velocity;
     public Color Color;
     public float Size;
+    public float MaxSize;
     public float Lifetime;
     public float MaxLifetime;
     public float Gravity;
     public float Rotation;
     public float RotationSpeed;
+    public float Friction = 0.98f; // Air resistance
+    public ParticleType Type = ParticleType.Default;
     
     public bool IsAlive => Lifetime > 0;
     public float Alpha => Math.Clamp(Lifetime / MaxLifetime, 0, 1);
     
     public void Initialize(Vector2 position, Vector2 velocity, Color color, 
-        float size, float lifetime, float gravity = 300f)
+        float size, float lifetime, float gravity = 300f, ParticleType type = ParticleType.Default)
     {
         Position = position;
         Velocity = velocity;
         Color = color;
         Size = size;
+        MaxSize = size;
         Lifetime = lifetime;
         MaxLifetime = lifetime;
         Gravity = gravity;
         Rotation = (float)(Random.Shared.NextDouble() * Math.PI * 2);
         RotationSpeed = (float)(Random.Shared.NextDouble() * 10 - 5);
+        Type = type;
+        
+        // Type-specific properties
+        switch (type)
+        {
+            case ParticleType.Smoke:
+                Friction = 0.95f; // Slower decay
+                break;
+            case ParticleType.Spark:
+                Friction = 0.99f; // Fast decay
+                break;
+            case ParticleType.Magic:
+                Friction = 1.0f; // No friction
+                break;
+        }
     }
     
     public void Update(float deltaTime)
@@ -178,9 +359,28 @@ public class Particle
         Lifetime -= deltaTime;
         if (!IsAlive) return;
         
+        // Apply gravity
         Velocity.Y += Gravity * deltaTime;
+        
+        // Apply friction
+        Velocity *= Friction;
+        
+        // Update position
         Position += Velocity * deltaTime;
         Rotation += RotationSpeed * deltaTime;
+        
+        // Size variation based on type
+        switch (Type)
+        {
+            case ParticleType.Smoke:
+                // Smoke grows over time
+                Size = MaxSize * (1f + (1f - Alpha) * 0.5f);
+                break;
+            case ParticleType.Spark:
+                // Sparks shrink quickly
+                Size = MaxSize * Alpha;
+                break;
+        }
     }
     
     public void Draw(SpriteBatch spriteBatch)
@@ -197,4 +397,14 @@ public class Particle
         
         spriteBatch.Draw(TextureManager.Pixel, rect, drawColor);
     }
+}
+
+public enum ParticleType
+{
+    Default,
+    Dust,
+    Spark,
+    Smoke,
+    Magic,
+    Explosion
 }
