@@ -45,6 +45,9 @@ public class GameWorld
     // Underground biome data (per tile, for cave biomes)
     private BiomeType[]? _undergroundBiomes;
     
+    // Surface heights (per X position) - set by WorldGenerator
+    private int[]? _surfaceHeights;
+    
     // State
     public bool LightingDirty { get; set; } = true;
     public int LoadedChunkCount => _loadedChunks.Count;
@@ -74,6 +77,38 @@ public class GameWorld
     public void SetUndergroundBiomes(BiomeType[] undergroundBiomes)
     {
         _undergroundBiomes = undergroundBiomes;
+    }
+    
+    public void SetSurfaceHeights(int[] surfaceHeights)
+    {
+        _surfaceHeights = surfaceHeights;
+    }
+    
+    /// <summary>
+    /// Get the surface height (Y coordinate) for a given X position
+    /// Returns the Y coordinate of the first solid tile from top, or SurfaceLevel if not found
+    /// </summary>
+    public int GetSurfaceHeight(int tileX)
+    {
+        if (_surfaceHeights != null && tileX >= 0 && tileX < _surfaceHeights.Length)
+        {
+            return _surfaceHeights[tileX];
+        }
+        
+        // Fallback: search for first solid tile from top
+        if (tileX >= 0 && tileX < Width)
+        {
+            for (int y = 0; y < Height; y++)
+            {
+                if (IsSolid(tileX, y))
+                {
+                    return y;
+                }
+            }
+        }
+        
+        // Default fallback
+        return TerraNovaGame.Config.SurfaceLevel;
     }
     
     public BiomeType GetBiomeAt(int x, int y)
@@ -356,6 +391,9 @@ public class GameWorld
     /// <summary>
     /// Draw visible chunks
     /// </summary>
+    /// <summary>
+    /// Draw visible chunks
+    /// </summary>
     public void Draw(SpriteBatch spriteBatch, Camera2D camera, GameTime? gameTime = null, ParticleSystem? particles = null)
     {
         // Calculate visible chunk range
@@ -365,32 +403,36 @@ public class GameWorld
         int endChunkX = Math.Min(ChunksX - 1, visible.Right / GameConfig.TileSize / Chunk.Size);
         int endChunkY = Math.Min(ChunksY - 1, visible.Bottom / GameConfig.TileSize / Chunk.Size);
         
-        // #region agent log
-        TerraNovaGame.AgentLog("GameWorld.Draw", "visible-range", new
-        {
-            visibleLeft = visible.Left,
-            visibleTop = visible.Top,
-            visibleRight = visible.Right,
-            visibleBottom = visible.Bottom,
-            startChunkX,
-            startChunkY,
-            endChunkX,
-            endChunkY
-        }, "H3-camera-visible");
-        // #endregion
         
         // Draw chunks back to front and spawn heat particles
         for (int cy = startChunkY; cy <= endChunkY; cy++)
         {
             for (int cx = startChunkX; cx <= endChunkX; cx++)
             {
-                _chunks[cx, cy].Draw(spriteBatch, camera, gameTime, _lightingSystem, this);
+                _chunks[cx, cy].Draw(spriteBatch, camera);
                 
                 // Spawn heat particles for fire sources in visible chunks
                 if (particles != null)
                 {
                     SpawnHeatParticlesForChunk(_chunks[cx, cy], particles, visible);
                 }
+            }
+        }
+    }
+    
+    public void DrawEmissive(SpriteBatch spriteBatch, Camera2D camera)
+    {
+        var visible = camera.VisibleArea;
+        int startChunkX = Math.Max(0, visible.Left / GameConfig.TileSize / Chunk.Size);
+        int startChunkY = Math.Max(0, visible.Top / GameConfig.TileSize / Chunk.Size);
+        int endChunkX = Math.Min(ChunksX - 1, visible.Right / GameConfig.TileSize / Chunk.Size);
+        int endChunkY = Math.Min(ChunksY - 1, visible.Bottom / GameConfig.TileSize / Chunk.Size);
+        
+        for (int cy = startChunkY; cy <= endChunkY; cy++)
+        {
+            for (int cx = startChunkX; cx <= endChunkX; cx++)
+            {
+                _chunks[cx, cy].DrawEmissive(spriteBatch, camera);
             }
         }
     }

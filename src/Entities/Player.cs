@@ -23,7 +23,7 @@ public class Player : Entity
     // Mining
     private float _miningProgress;
     private (int x, int y)? _miningTarget;
-    private const float BaseMiningSpeed = 2.0f; // Increased for faster mining
+    private const float BaseMiningSpeed = 0.8f;
     
     // Movement
     private bool _wasOnGround;
@@ -33,7 +33,8 @@ public class Player : Entity
     private const float CoyoteTime = 0.1f;
     
     // Animation
-    private AnimationSystem _animationSystem;
+    private int _animFrame;
+    private float _animTimer;
     private bool _isMoving;
     
     // Effects
@@ -62,62 +63,7 @@ public class Player : Entity
         Inventory.AddItem(new Item(ItemType.Torch, 50));
         Inventory.AddItem(new Item(ItemType.Wood, 100));
         
-        // Initialize animation system
-        _animationSystem = new AnimationSystem();
-        InitializeAnimations();
-        
         _spawnPoint = position;
-    }
-    
-    private void InitializeAnimations()
-    {
-        const int frameWidth = 20;
-        const int frameHeight = 42;
-        
-        // Idle animation (3 frames, row 0)
-        var idleFrames = new Rectangle[3];
-        for (int i = 0; i < 3; i++)
-        {
-            idleFrames[i] = new Rectangle(i * frameWidth, 0 * frameHeight, frameWidth, frameHeight);
-        }
-        _animationSystem.AddAnimation(AnimationState.Idle, new Animation(idleFrames, 0.15f, true));
-        
-        // Walk animation (6 frames, row 1)
-        var walkFrames = new Rectangle[6];
-        for (int i = 0; i < 6; i++)
-        {
-            walkFrames[i] = new Rectangle(i * frameWidth, 1 * frameHeight, frameWidth, frameHeight);
-        }
-        _animationSystem.AddAnimation(AnimationState.Walk, new Animation(walkFrames, 0.1f, true));
-        
-        // Run animation (6 frames, row 2)
-        var runFrames = new Rectangle[6];
-        for (int i = 0; i < 6; i++)
-        {
-            runFrames[i] = new Rectangle(i * frameWidth, 2 * frameHeight, frameWidth, frameHeight);
-        }
-        _animationSystem.AddAnimation(AnimationState.Run, new Animation(runFrames, 0.08f, true));
-        
-        // Jump animation (2 frames, row 3)
-        var jumpFrames = new Rectangle[2];
-        for (int i = 0; i < 2; i++)
-        {
-            jumpFrames[i] = new Rectangle(i * frameWidth, 3 * frameHeight, frameWidth, frameHeight);
-        }
-        _animationSystem.AddAnimation(AnimationState.Jump, new Animation(jumpFrames, 0.2f, false));
-        
-        // Fall animation (1 frame, row 4)
-        var fallFrames = new Rectangle[1];
-        fallFrames[0] = new Rectangle(0, 4 * frameHeight, frameWidth, frameHeight);
-        _animationSystem.AddAnimation(AnimationState.Fall, new Animation(fallFrames, 0.2f, true));
-        
-        // Mining animation (3 frames, row 5)
-        var miningFrames = new Rectangle[3];
-        for (int i = 0; i < 3; i++)
-        {
-            miningFrames[i] = new Rectangle(i * frameWidth, 5 * frameHeight, frameWidth, frameHeight);
-        }
-        _animationSystem.AddAnimation(AnimationState.Mining, new Animation(miningFrames, 0.12f, true));
     }
     
     public void Update(GameTime gameTime, InputManager input, GameWorld world, ParticleSystem particles)
@@ -164,7 +110,6 @@ public class Player : Entity
         
         // Update animation
         UpdateAnimation(deltaTime);
-        _animationSystem.Update(deltaTime);
     }
     
     private void HandleMovement(InputManager input, float deltaTime)
@@ -262,17 +207,6 @@ public class Player : Entity
     public void Mine(GameWorld world, int tileX, int tileY, ParticleSystem particles)
     {
         var tile = world.GetTile(tileX, tileY);
-        
-        // #region agent log
-        TerraNovaGame.AgentLog("Player.Mine", "entry", new {
-            tileX,
-            tileY,
-            tileType = tile.ToString(),
-            tileIsAir = tile == TileType.Air,
-            tileIsWater = tile == TileType.Water
-        }, "H2-mining-entry");
-        // #endregion
-        
         if (tile == TileType.Air || tile == TileType.Water)
         {
             ResetMining();
@@ -297,40 +231,8 @@ public class Player : Entity
         float miningPower = GetMiningPower();
         float hardness = tileData.Hardness;
         
-        // Progress mining - use deltaTime instead of fixed 1/60
-        float deltaTime = 1f / 60f; // Approximate, should be passed from Update
-        
-        // Calculate mining progress - ensure it works even with low mining power
-        float progressPerSecond = (miningPower / hardness) * BaseMiningSpeed;
-        _miningProgress += progressPerSecond * deltaTime;
-        
-        // #region agent log
-        TerraNovaGame.AgentLog("Player.Mine", "mining-calculation", new {
-            miningPower,
-            hardness,
-            progressPerSecond,
-            deltaTime,
-            progressBefore = _miningProgress - (progressPerSecond * deltaTime),
-            progressAfter = _miningProgress,
-            baseMiningSpeed = BaseMiningSpeed
-        }, "H4-mining-calculation");
-        // #endregion
-        
-        // Spawn mining particles based on progress
-        var worldPos = new Vector2(
-            tileX * GameConfig.TileSize + GameConfig.TileSize / 2,
-            tileY * GameConfig.TileSize + GameConfig.TileSize / 2
-        );
-        particles.SpawnMiningParticles(worldPos, tile, _miningProgress);
-        
-        // #region agent log
-        TerraNovaGame.AgentLog("Player.Mine", "progress", new {
-            miningPower,
-            hardness,
-            progress = _miningProgress,
-            progressPercent = _miningProgress * 100
-        }, "H3-mining-progress");
-        // #endregion
+        // Progress mining
+        _miningProgress += (miningPower / hardness) * BaseMiningSpeed * (1f / 60f);
         
         // Spawn particles while mining
         if (Random.Shared.NextDouble() < 0.3)
@@ -411,10 +313,10 @@ public class Player : Entity
         Inventory.RemoveItem(SelectedSlot, 1);
     }
     
-    public float GetMiningPower()
+    private float GetMiningPower()
     {
         var item = Inventory.GetItem(SelectedSlot);
-        if (item == null) return 1f; // Base mining power without tool
+        if (item == null) return 1f;
         
         // Tool mining power
         return item.Type switch
@@ -434,30 +336,17 @@ public class Player : Entity
         return tile switch
         {
             TileType.Dirt => ItemType.Dirt,
-            TileType.Grass => ItemType.Dirt, // Grass drops dirt
             TileType.Stone => ItemType.Stone,
             TileType.Sand => ItemType.Sand,
             TileType.Snow => ItemType.Snow,
             TileType.Wood => ItemType.Wood,
-            TileType.Leaves => ItemType.None, // Leaves don't drop items
             TileType.CopperOre => ItemType.CopperOre,
             TileType.IronOre => ItemType.IronOre,
             TileType.GoldOre => ItemType.GoldOre,
             TileType.DiamondOre => ItemType.Diamond,
             TileType.Coal => ItemType.Coal,
-            TileType.Mud => ItemType.Mud,
-            TileType.JungleGrass => ItemType.Mud, // Jungle grass drops mud
             TileType.Torch => ItemType.Torch,
             TileType.Chest => ItemType.Chest,
-            TileType.CraftingTable => ItemType.CraftingTable,
-            TileType.Furnace => ItemType.Furnace,
-            TileType.Anvil => ItemType.Anvil,
-            TileType.Crystal => ItemType.Crystal,
-            TileType.BlueCrystal => ItemType.BlueCrystal,
-            TileType.RedCrystal => ItemType.RedCrystal,
-            TileType.Mushroom => ItemType.Mushroom,
-            TileType.GlowingMushroom => ItemType.GlowingMushroom,
-            TileType.WoodPlatform => ItemType.WoodPlatform,
             _ => ItemType.None
         };
     }
@@ -471,50 +360,33 @@ public class Player : Entity
             ItemType.Sand => TileType.Sand,
             ItemType.Snow => TileType.Snow,
             ItemType.Wood => TileType.Wood,
-            ItemType.Mud => TileType.Mud,
-            ItemType.CopperOre => TileType.CopperOre,
-            ItemType.IronOre => TileType.IronOre,
-            ItemType.GoldOre => TileType.GoldOre,
-            ItemType.Coal => TileType.Coal,
             ItemType.Torch => TileType.Torch,
             ItemType.Chest => TileType.Chest,
             ItemType.CraftingTable => TileType.CraftingTable,
-            ItemType.Furnace => TileType.Furnace,
-            ItemType.Anvil => TileType.Anvil,
-            ItemType.WoodPlatform => TileType.WoodPlatform,
             _ => TileType.Air
         };
     }
     
     private void UpdateAnimation(float deltaTime)
     {
-        // Determine animation state based on player state
-        AnimationState newState;
-        
-        if (_miningTarget.HasValue)
+        if (_isMoving && IsOnGround)
         {
-            newState = AnimationState.Mining;
+            _animTimer += deltaTime;
+            if (_animTimer >= 0.1f)
+            {
+                _animTimer = 0;
+                _animFrame = (_animFrame + 1) % 4;
+            }
         }
         else if (!IsOnGround)
         {
-            newState = Velocity.Y < 0 ? AnimationState.Jump : AnimationState.Fall;
-        }
-        else if (_isMoving)
-        {
-            // Determine if running or walking based on speed
-            float speed = Math.Abs(Velocity.X);
-            newState = speed > 3.0f ? AnimationState.Run : AnimationState.Walk;
+            _animFrame = 1; // Jump frame
         }
         else
         {
-            newState = AnimationState.Idle;
+            _animFrame = 0; // Idle
+            _animTimer = 0;
         }
-        
-        // Update facing direction
-        _animationSystem.FacingRight = FacingRight;
-        
-        // Set animation state
-        _animationSystem.SetState(newState);
     }
     
     protected override void OnDeath()
@@ -540,10 +412,6 @@ public class Player : Entity
     
     public override void Draw(SpriteBatch spriteBatch)
     {
-        // #region agent log
-        TerraNovaGame.AgentLog("Player.Draw", "entry", new { IsActive, IsDead, IsInvulnerable, PositionX = Position.X, PositionY = Position.Y, Width, Height }, "H1-player-inactive");
-        // #endregion
-        
         if (!IsActive && !IsDead) return;
         
         // Flicker when invulnerable
@@ -552,20 +420,13 @@ public class Player : Entity
         
         var destRect = new Rectangle((int)Position.X, (int)Position.Y, Width, Height);
         
-        // #region agent log
-        TerraNovaGame.AgentLog("Player.Draw", "drawing", new { destRectX = destRect.X, destRectY = destRect.Y, destRectWidth = destRect.Width, destRectHeight = destRect.Height, PlayerSpriteNull = TextureManager.PlayerSprite == null }, "H2-sprite-null");
-        // #endregion
-        
-        // Get current animation frame
-        var sourceRect = _animationSystem.GetCurrentFrame();
-        
         // Flip sprite if facing left
-        var effects = _animationSystem.FacingRight ? SpriteEffects.None : SpriteEffects.FlipHorizontally;
+        var effects = FacingRight ? SpriteEffects.None : SpriteEffects.FlipHorizontally;
         
         spriteBatch.Draw(
-            TextureManager.PlayerSpriteSheet,
+            TextureManager.PlayerSprite,
             destRect,
-            sourceRect,
+            null,
             Color.White,
             0f,
             Vector2.Zero,

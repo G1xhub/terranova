@@ -1,48 +1,45 @@
-using System.Collections.Generic;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using TerraNova.Core;
 using TerraNova.World;
+using System;
 
 namespace TerraNova.Systems;
 
 /// <summary>
-/// Dynamic lighting system with light propagation
-/// Uses a light map texture for efficient rendering
+/// Dynamic lighting system with RGB color support and light propagation
 /// </summary>
 public class LightingSystem : IDisposable
 {
     private readonly GameWorld _world;
     private readonly GraphicsDevice _graphicsDevice;
     
-    // Light map (stores light levels for each tile)
-    private readonly byte[,] _lightMap;
-    private readonly Color[,] _lightColorMap; // RGB light colors
+    // RGB Light map (stores light color for each tile)
+    private readonly Color[,] _lightMap;
     private Texture2D? _lightTexture;
     private Color[] _lightTextureData;
+
+    public Texture2D LightMap => _lightTexture!;
     
     // Configuration
-    private const float SunlightDecay = 0.92f;      // How much light decreases through solid tiles
-    private const float AirLightDecay = 0.985f;      // Light decay through air (increased for softer, more natural spread)
+    private const float SunlightDecay = 0.85f;      // More dramatic falloff
+    private const float AirLightDecay = 0.96f;       
     private const byte MaxLight = 255;
-    private const byte MinAmbient = 8;               // Minimum light in caves
+    private const byte MinAmbient = 15;               
     
     // Dirty region tracking for efficient updates
     private Rectangle _dirtyRegion;
     private bool _fullUpdateRequired = true;
     
-    // Dynamic light intensity (flickering, pulsing)
-    private float _timeAccumulator = 0f;
-    private readonly Dictionary<(int x, int y), float> _lightIntensityModifiers = new();
-    private bool _lightingChanged = false;
+    // Sunlight color based on time of day
+    private Color _currentSunColor = Color.White;
     
     public LightingSystem(GameWorld world, GraphicsDevice graphicsDevice)
     {
         _world = world;
         _graphicsDevice = graphicsDevice;
         
-        _lightMap = new byte[world.Width, world.Height];
-        _lightColorMap = new Color[world.Width, world.Height];
+        _lightMap = new Color[world.Width, world.Height];
         _lightTextureData = new Color[world.Width * world.Height];
         
         CreateLightTexture();
@@ -54,356 +51,121 @@ public class LightingSystem : IDisposable
         _lightTexture = new Texture2D(_graphicsDevice, _world.Width, _world.Height);
     }
     
-    /// <summary>
-    /// Update lighting for the world
-    /// </summary>
-    public void Update(float dayTime, float deltaTime = 0f, Rectangle? visibleArea = null)
+    public void Update(float dayTime)
     {
-        // Update time accumulator for dynamic effects
-        _timeAccumulator += deltaTime;
-        
-        if (_fullUpdateRequired)
-        {
-            CalculateFullLighting(dayTime);
-            _fullUpdateRequired = false;
-        }
-        else
-        {
-            // Incremental update for changed regions
-            // TODO: Implement dirty region updates
-        }
-        
-        // Update dynamic light intensity modifiers (flickering, pulsing) - only visible area
-        UpdateDynamicLightIntensity(visibleArea);
-        
-        // Only update light texture if lighting changed
-        if (_fullUpdateRequired || _lightingChanged)
-        {
-            UpdateLightTexture();
-            _lightingChanged = false;
-        }
-    }
-    
-    private void UpdateDynamicLightIntensity(Rectangle? visibleArea = null)
-    {
-        // Only update modifiers for visible light sources (with some padding for off-screen effects)
-        int padding = 5; // Tiles of padding for light sources just outside view
-        
-        if (visibleArea.HasValue)
-        {
-            var area = visibleArea.Value;
-            int startX = Math.Max(0, (area.Left / GameConfig.TileSize) - padding);
-            int startY = Math.Max(0, (area.Top / GameConfig.TileSize) - padding);
-            int endX = Math.Min(_world.Width - 1, (area.Right / GameConfig.TileSize) + padding);
-            int endY = Math.Min(_world.Height - 1, (area.Bottom / GameConfig.TileSize) + padding);
-            
-            // Remove modifiers outside visible area
-            var keysToRemove = new List<(int x, int y)>();
-            foreach (var key in _lightIntensityModifiers.Keys)
-            {
-                if (key.x < startX || key.x > endX || key.y < startY || key.y > endY)
-                {
-                    keysToRemove.Add(key);
-                }
-            }
-            foreach (var key in keysToRemove)
-            {
-                _lightIntensityModifiers.Remove(key);
-            }
-            
-            // Update or add modifiers for visible area
-            for (int y = startY; y <= endY; y++)
-            {
-                for (int x = startX; x <= endX; x++)
-                {
-                    var tile = _world.GetTile(x, y);
-                    int lightLevel = TileProperties.GetLightLevel(tile);
-                    
-                    if (lightLevel > 0)
-                    {
-                        float modifier = GetLightIntensityModifier(tile, x, y);
-                        _lightIntensityModifiers[(x, y)] = modifier;
-                    }
-                }
-            }
-        }
-        else
-        {
-            // Fallback: update all (for initial load or when camera not available)
-            _lightIntensityModifiers.Clear();
-            for (int y = 0; y < _world.Height; y++)
-            {
-                for (int x = 0; x < _world.Width; x++)
-                {
-                    var tile = _world.GetTile(x, y);
-                    int lightLevel = TileProperties.GetLightLevel(tile);
-                    
-                    if (lightLevel > 0)
-                    {
-                        float modifier = GetLightIntensityModifier(tile, x, y);
-                        _lightIntensityModifiers[(x, y)] = modifier;
-                    }
-                }
-            }
-        }
-    }
-    
-    private float GetLightIntensityModifier(TileType tile, int x, int y)
-    {
-        // Use position-based seed for consistent flickering per light source
-        float seed = (x * 137.5f + y * 97.3f) * 0.01f;
-        
-        return tile switch
-        {
-            TileType.Torch => 0.85f + 0.15f * (MathF.Sin(_timeAccumulator * 8f + seed) * 0.5f + 0.5f), // Gentle flicker
-            TileType.Furnace => 0.9f + 0.1f * (MathF.Sin(_timeAccumulator * 4f + seed) * 0.5f + 0.5f), // Slow pulse
-            TileType.Lava => 0.88f + 0.12f * (MathF.Sin(_timeAccumulator * 6f + seed * 2f) * 0.5f + 0.5f), // Medium pulse
-            _ => 1.0f // No flicker for other sources
-        };
+        // Always full update for now to ensure smoothness, can optimize later if needed
+        CalculateFullLighting(dayTime);
+        UpdateLightTexture();
     }
     
     private void CalculateFullLighting(float dayTime)
     {
-        // Calculate sun brightness and color based on time of day
+        _currentSunColor = CalculateSunColor(dayTime);
         float sunBrightness = CalculateSunBrightness(dayTime);
-        Color sunColor = CalculateSunColor(dayTime);
-        byte skyLight = (byte)(MaxLight * sunBrightness);
         
-        // Clear light maps
-        Array.Clear(_lightMap, 0, _lightMap.Length);
+        // Clear light map
+        Color ambientColor = new Color(MinAmbient, MinAmbient, MinAmbient);
         for (int y = 0; y < _world.Height; y++)
         {
             for (int x = 0; x < _world.Width; x++)
             {
-                _lightColorMap[x, y] = Color.Black;
+                _lightMap[x, y] = ambientColor;
             }
         }
         
-        // Phase 1: Sunlight from above with color
+        // Phase 1: Sunlight from above
+        // Parallelize for speed? No, column dependency prevents simple parallelization in Y.
+        // X is independent though.
         for (int x = 0; x < _world.Width; x++)
         {
-            byte currentLight = skyLight;
-            Color currentColor = sunColor;
-            
-            // Get biome for ambient light
-            var biome = GetBiomeAt(x, 0);
-            Color ambientColor = GetBiomeAmbientColor(biome, dayTime);
+            float currentIntensity = sunBrightness;
             
             for (int y = 0; y < _world.Height; y++)
             {
                 var tile = _world.GetTile(x, y);
                 
-                if (tile == TileType.Air || TileProperties.IsLiquid(tile))
+                // Light passes through
+                if (tile == TileType.Air || !TileProperties.IsSolid(tile) || tile == TileType.WoodPlatform)
                 {
-                    _lightMap[x, y] = currentLight;
-                    // Blend sunlight with ambient
-                    _lightColorMap[x, y] = Color.Lerp(ambientColor, currentColor, currentLight / 255f);
-                    currentLight = (byte)(currentLight * AirLightDecay);
-                    // Fade color towards ambient
-                    currentColor = Color.Lerp(ambientColor, currentColor, AirLightDecay);
+                    byte lightValue = (byte)(MaxLight * currentIntensity);
+                    Color sunLight = MultiplyColor(_currentSunColor, lightValue);
+                    _lightMap[x, y] = MaxColor(_lightMap[x, y], sunLight);
+                    
+                    currentIntensity *= AirLightDecay;
                 }
                 else
                 {
-                    // Solid tile blocks light
-                    currentLight = (byte)(currentLight * SunlightDecay);
-                    _lightMap[x, y] = Math.Max(currentLight, MinAmbient);
-                    _lightColorMap[x, y] = Color.Lerp(ambientColor, currentColor, currentLight / 255f);
+                    // Solid tile blocks light but gets lit itself
+                    currentIntensity *= SunlightDecay;
+                    byte lightValue = (byte)Math.Max(MaxLight * currentIntensity, MinAmbient);
+                    Color sunLight = MultiplyColor(_currentSunColor, lightValue);
+                    _lightMap[x, y] = MaxColor(_lightMap[x, y], sunLight);
                     
-                    // Check if tile emits light
+                    // Emissive check
                     int emittedLight = TileProperties.GetLightLevel(tile);
                     if (emittedLight > 0)
                     {
-                        Color lightColor = GetLightColorForTile(tile);
-                        byte lightValue = (byte)(emittedLight * 20);
-                        _lightMap[x, y] = Math.Max(_lightMap[x, y], lightValue);
-                        _lightColorMap[x, y] = Color.Lerp(_lightColorMap[x, y], lightColor, lightValue / 255f);
+                        Color emitColor = GetTileLightColor(tile);
+                        // Make light sources VERY bright
+                        _lightMap[x, y] = MaxColor(_lightMap[x, y], emitColor);
                     }
                 }
             }
         }
         
-        // Phase 2: Add light from light-emitting tiles with colors (do this before propagation)
+        // Phase 2: Propagation
+        PropagateLight(4); // More passes for smoother spreading
+        
+        // Phase 3: Point Lights (Torches, etc)
         AddEmissiveLights();
-        
-        // Phase 3: Light propagation with color (multiple passes for softer spread)
-        // This propagates both sunlight and light from sources
-        PropagateLightWithColor(6); // Increased from 5 to 6 for softer, more natural light spread
-        
-        // Phase 4: Add indirect lighting (light bouncing off reflective surfaces) for cozy feel
-        AddIndirectLighting();
-        
-        _lightingChanged = true;
     }
     
-    private BiomeType GetBiomeAt(int x, int y)
-    {
-        // Use world's biome system
-        return _world.GetBiomeAt(x, y);
-    }
-    
-    private Color GetBiomeAmbientColor(BiomeType biome, float dayTime)
-    {
-        float brightness = CalculateSunBrightness(dayTime);
-        
-        return biome switch
-        {
-            BiomeType.Desert => Color.Lerp(
-                new Color(80, 60, 50), // Night: even warmer dark tones for cozy feel
-                new Color(255, 250, 220), // Day: warmer, more golden bright
-                brightness
-            ),
-            BiomeType.Snow => Color.Lerp(
-                new Color(45, 55, 75), // Night: cool dark (slightly warmer)
-                new Color(245, 252, 255), // Day: cool bright
-                brightness
-            ),
-            BiomeType.Jungle => Color.Lerp(
-                new Color(35, 55, 35), // Night: green dark
-                new Color(210, 255, 210), // Day: green bright
-                brightness
-            ),
-            // Underground biomes - darker, more atmospheric
-            BiomeType.Cave => Color.Lerp(
-                new Color(20, 25, 30), // Very dark
-                new Color(40, 45, 50), // Slightly lighter
-                brightness * 0.3f // Much less light underground
-            ),
-            BiomeType.CrystalCave => Color.Lerp(
-                new Color(15, 20, 40), // Dark blue-purple
-                new Color(60, 70, 120), // Brighter blue-purple with crystal glow
-                brightness * 0.4f
-            ),
-            BiomeType.MushroomCave => Color.Lerp(
-                new Color(30, 20, 25), // Dark purple-red
-                new Color(80, 50, 70), // Brighter purple-red
-                brightness * 0.35f
-            ),
-            BiomeType.DeepCave => Color.Lerp(
-                new Color(10, 10, 15), // Very dark, almost black
-                new Color(25, 25, 30), // Slightly lighter
-                brightness * 0.2f // Minimal light
-            ),
-            _ => Color.Lerp(
-                new Color(50, 60, 70), // Night: warmer neutral dark for cozy feel
-                new Color(220, 235, 250), // Day: warmer neutral bright
-                brightness
-            )
-        };
-    }
-    
-    private Color GetLightColorForTile(TileType tile)
-    {
-        return tile switch
-        {
-            TileType.Torch => new Color(255, 220, 140), // Even warmer, more cozy orange-gold
-            TileType.Furnace => new Color(255, 140, 70), // Warmer orange-red for cozy warmth
-            TileType.Lava => new Color(255, 180, 80), // Brighter, warmer golden-orange
-            _ => new Color(255, 250, 240) // Slightly warm white instead of pure white
-        };
-    }
-    
-    private Color CalculateSunColor(float dayTime)
-    {
-        // dayTime: 0 = midnight, 0.25 = 6am, 0.5 = noon, 0.75 = 6pm
-        
-        if (dayTime >= 0.25f && dayTime <= 0.75f)
-        {
-            // Daytime - warm to cool with warmer transitions
-            float t = (dayTime - 0.25f) / 0.5f;
-            if (t < 0.3f) // Morning - warm golden sunrise
-                return Color.Lerp(new Color(255, 210, 160), new Color(255, 245, 230), t / 0.3f);
-            else if (t > 0.7f) // Evening - warm golden sunset (cozy feeling)
-                return Color.Lerp(new Color(255, 245, 230), new Color(255, 200, 140), (t - 0.7f) / 0.3f);
-            else // Midday - slightly warm white (not pure white)
-                return new Color(255, 252, 248);
-        }
-        else
-        {
-            // Nighttime - warmer blue-purple (cozy, less cold feeling)
-            return new Color(100, 120, 170);
-        }
-    }
-    
-    private void PropagateLightWithColor(int passes)
+    private void PropagateLight(int passes)
     {
         for (int pass = 0; pass < passes; pass++)
         {
-            // Left to right, top to bottom
-            for (int y = 1; y < _world.Height - 1; y++)
+            // Forward pass
+            for (int y = 0; y < _world.Height; y++)
             {
-                for (int x = 1; x < _world.Width - 1; x++)
+                for (int x = 0; x < _world.Width; x++)
                 {
-                    SpreadLightWithColor(x, y);
+                    // Check Left and Top
+                    if (x > 0) SpreadLight(x, y, x - 1, y);
+                    if (y > 0) SpreadLight(x, y, x, y - 1);
                 }
             }
             
-            // Right to left, bottom to top
-            for (int y = _world.Height - 2; y > 0; y--)
+            // Backward pass
+            for (int y = _world.Height - 1; y >= 0; y--)
             {
-                for (int x = _world.Width - 2; x > 0; x--)
+                for (int x = _world.Width - 1; x >= 0; x--)
                 {
-                    SpreadLightWithColor(x, y);
+                    // Check Right and Bottom
+                    if (x < _world.Width - 1) SpreadLight(x, y, x + 1, y);
+                    if (y < _world.Height - 1) SpreadLight(x, y, x, y + 1);
                 }
             }
         }
     }
     
-    private void SpreadLightWithColor(int x, int y)
+    private void SpreadLight(int x, int y, int nx, int ny)
     {
+        // Spread from neighbor (nx, ny) to current (x, y)
+        Color neighborLight = _lightMap[nx, ny];
+        
+        // If neighbor is dark, nothing to spread
+        if (neighborLight.R <= MinAmbient && neighborLight.G <= MinAmbient && neighborLight.B <= MinAmbient) return;
+        
         var tile = _world.GetTile(x, y);
-        bool isSolid = TileProperties.IsSolid(tile);
-        float reflectivity = TileProperties.GetReflectivity(tile);
+        float decay = TileProperties.IsSolid(tile) ? SunlightDecay : AirLightDecay;
         
-        // Different decay for solid vs air tiles
-        float decay = isSolid ? SunlightDecay : AirLightDecay;
+        Color spread = new Color(
+            (byte)(neighborLight.R * decay),
+            (byte)(neighborLight.G * decay),
+            (byte)(neighborLight.B * decay)
+        );
         
-        // Get max light from all 8 neighbors (including diagonals) for smoother spread
-        byte maxNeighbor = 0;
-        Color neighborColor = Color.Black;
-        
-        var neighbors = new[]
-        {
-            (_lightMap[x - 1, y - 1], _lightColorMap[x - 1, y - 1], 1.414f), // Diagonal
-            (_lightMap[x, y - 1], _lightColorMap[x, y - 1], 1.0f),           // Up
-            (_lightMap[x + 1, y - 1], _lightColorMap[x + 1, y - 1], 1.414f), // Diagonal
-            (_lightMap[x - 1, y], _lightColorMap[x - 1, y], 1.0f),           // Left
-            (_lightMap[x + 1, y], _lightColorMap[x + 1, y], 1.0f),           // Right
-            (_lightMap[x - 1, y + 1], _lightColorMap[x - 1, y + 1], 1.414f), // Diagonal
-            (_lightMap[x, y + 1], _lightColorMap[x, y + 1], 1.0f),           // Down
-            (_lightMap[x + 1, y + 1], _lightColorMap[x + 1, y + 1], 1.414f)  // Diagonal
-        };
-        
-        foreach (var (light, color, dist) in neighbors)
-        {
-            if (light > maxNeighbor)
-            {
-                maxNeighbor = light;
-                neighborColor = color;
-            }
-        }
-        
-        // Apply distance-based decay for diagonal neighbors
-        byte spreadLight = (byte)(maxNeighbor * decay);
-        
-        // Add reflection boost for reflective surfaces (makes light bounce off)
-        if (reflectivity > 0.1f && isSolid)
-        {
-            // Reflective surfaces reflect light back, making them appear brighter
-            float reflectionBoost = reflectivity * 0.3f; // Up to 30% brightness boost
-            spreadLight = (byte)Math.Min(255, spreadLight + (maxNeighbor * reflectionBoost));
-            
-            // Reflected light is slightly warmer (cozy reflection)
-            neighborColor = Color.Lerp(neighborColor, new Color(255, 240, 220), reflectivity * 0.2f);
-        }
-        
-        // Only update if new light is brighter and significant
-        if (spreadLight > _lightMap[x, y] && spreadLight > 5)
-        {
-            _lightMap[x, y] = spreadLight;
-            // Blend colors based on light intensity - softer blend for cozy feel
-            float blendFactor = spreadLight / 255f;
-            _lightColorMap[x, y] = Color.Lerp(_lightColorMap[x, y], neighborColor, blendFactor * 0.7f); // Increased from 0.6f
-        }
+        _lightMap[x, y] = MaxColor(_lightMap[x, y], spread);
     }
     
     private void AddEmissiveLights()
@@ -417,311 +179,98 @@ public class LightingSystem : IDisposable
                 
                 if (lightLevel > 0)
                 {
-                    AddPointLight(x, y, lightLevel);
+                    Color lightColor = GetTileLightColor(tile);
+                    AddPointLight(x, y, lightLevel, lightColor);
                 }
             }
         }
     }
     
-    private void AddIndirectLighting()
+    private void AddPointLight(int centerX, int centerY, int intensity, Color color)
     {
-        // Add indirect lighting from reflective surfaces - light bouncing off walls
-        // This creates a cozy, warm atmosphere with softer light spread
-        for (int pass = 0; pass < 3; pass++) // Increased from 2 to 3 passes for better indirect bounce
+        int radius = intensity * 2; // Increased radius for better atmosphere
+        
+        for (int dy = -radius; dy <= radius; dy++)
         {
-            for (int y = 1; y < _world.Height - 1; y++)
+            for (int dx = -radius; dx <= radius; dx++)
             {
-                for (int x = 1; x < _world.Width - 1; x++)
-                {
-                    var tile = _world.GetTile(x, y);
-                    float reflectivity = TileProperties.GetReflectivity(tile);
-                    
-                    // Only process reflective solid tiles
-                    if (reflectivity > 0.1f && TileProperties.IsSolid(tile))
-                    {
-                        // Collect light from neighbors
-                        byte maxNeighborLight = 0;
-                        Color maxNeighborColor = Color.Black;
-                        
-                        var neighbors = new[]
-                        {
-                            _lightMap[x - 1, y],
-                            _lightMap[x + 1, y],
-                            _lightMap[x, y - 1],
-                            _lightMap[x, y + 1]
-                        };
-                        
-                        var neighborColors = new[]
-                        {
-                            _lightColorMap[x - 1, y],
-                            _lightColorMap[x + 1, y],
-                            _lightColorMap[x, y - 1],
-                            _lightColorMap[x, y + 1]
-                        };
-                        
-                        for (int i = 0; i < neighbors.Length; i++)
-                        {
-                            if (neighbors[i] > maxNeighborLight)
-                            {
-                                maxNeighborLight = neighbors[i];
-                                maxNeighborColor = neighborColors[i];
-                            }
-                        }
-                        
-                        // Reflective surfaces reflect light back (indirect lighting)
-                        if (maxNeighborLight > 15) // Lowered threshold from 20 to 15 for more indirect light
-                        {
-                            // Calculate reflected light (warmer, softer) - increased reflection
-                            byte reflectedLight = (byte)(maxNeighborLight * reflectivity * 0.5f); // Increased from 0.4f to 0.5f
-                            
-                            // Make reflected light warmer for cozy feel - more warmth
-                            Color reflectedColor = Color.Lerp(maxNeighborColor, new Color(255, 230, 200), 0.4f); // Increased from 0.3f
-                            
-                            // Add reflected light to this tile and nearby air tiles
-                            if (reflectedLight > _lightMap[x, y])
-                            {
-                                _lightMap[x, y] = Math.Max(_lightMap[x, y], reflectedLight);
-                                float blendFactor = reflectedLight / 255f;
-                                _lightColorMap[x, y] = Color.Lerp(_lightColorMap[x, y], reflectedColor, blendFactor * 0.5f);
-                            }
-                            
-                            // Spread reflected light to adjacent air tiles (softer indirect bounce)
-                            var adjacentOffsets = new[] { (0, -1), (0, 1), (-1, 0), (1, 0) };
-                            foreach (var (dx, dy) in adjacentOffsets)
-                            {
-                                int nx = x + dx;
-                                int ny = y + dy;
-                                
-                                if (nx >= 0 && nx < _world.Width && ny >= 0 && ny < _world.Height)
-                                {
-                                    var neighborTile = _world.GetTile(nx, ny);
-                                    if (!TileProperties.IsSolid(neighborTile))
-                                    {
-                                        byte indirectLight = (byte)(reflectedLight * 0.6f); // Softer indirect light
-                                        if (indirectLight > _lightMap[nx, ny] && indirectLight > 5)
-                                        {
-                                            _lightMap[nx, ny] = indirectLight;
-                                            float indirectBlend = indirectLight / 255f;
-                                            _lightColorMap[nx, ny] = Color.Lerp(_lightColorMap[nx, ny], reflectedColor, indirectBlend * 0.4f);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                int x = centerX + dx;
+                int y = centerY + dy;
+                
+                if (x < 0 || x >= _world.Width || y < 0 || y >= _world.Height) continue;
+                
+                float dist = (float)Math.Sqrt(dx * dx + dy * dy);
+                if (dist > radius) continue;
+                
+                float falloff = 1f - (dist / radius);
+                falloff = falloff * falloff; // Exponential falloff looks more natural
+                
+                Color lightAtPoint = MultiplyColor(color, (byte)(255 * falloff));
+                _lightMap[x, y] = MaxColor(_lightMap[x, y], lightAtPoint);
             }
         }
     }
     
-    private void AddPointLight(int centerX, int centerY, int intensity)
+    public static Color GetTileLightColor(TileType type) => type switch
     {
-        var tile = _world.GetTile(centerX, centerY);
-        Color lightColor = GetLightColorForTile(tile);
-        
-        // Increase radius for better light spread
-        // Torch (12) -> 18 tiles, Furnace (8) -> 12 tiles, Lava (15) -> 22 tiles
-        int baseRadius = intensity;
-        int radius = baseRadius + (baseRadius / 2); // 50% more radius
-        
-        // Use BFS-like approach for better light propagation through air
-        var queue = new Queue<(int x, int y, byte light, float distance)>();
-        var visited = new HashSet<(int, int)>();
-        
-        // Start from center
-        // Start from center with dynamic intensity modifier
-        float intensityModifier = _lightIntensityModifiers.TryGetValue((centerX, centerY), out var mod) ? mod : 1.0f;
-        byte centerLight = (byte)Math.Min(255, intensity * 25 * intensityModifier); // Apply dynamic modifier
-        queue.Enqueue((centerX, centerY, centerLight, 0f));
-        visited.Add((centerX, centerY));
-        
-        while (queue.Count > 0)
-        {
-            var (x, y, currentLight, dist) = queue.Dequeue();
-            
-            if (x < 0 || x >= _world.Width || y < 0 || y >= _world.Height)
-                continue;
-            
-            if (dist > radius) continue;
-            
-            // Check if tile blocks light
-            var tileAtPos = _world.GetTile(x, y);
-            bool isSolid = TileProperties.IsSolid(tileAtPos);
-            
-            // Apply light if it's brighter than current
-            if (currentLight > _lightMap[x, y])
-            {
-                _lightMap[x, y] = currentLight;
-                // Blend light color - warmer blend for cozy feel
-                float blendFactor = currentLight / 255f;
-                // Make light slightly warmer when blending
-                Color warmLightColor = Color.Lerp(lightColor, new Color(255, 240, 220), 0.1f);
-                _lightColorMap[x, y] = Color.Lerp(_lightColorMap[x, y], warmLightColor, blendFactor * 0.85f); // Increased from 0.8f
-            }
-            
-            // Propagate to neighbors (only through air/non-solid tiles)
-            if (!isSolid || (x == centerX && y == centerY)) // Allow light source itself to be solid
-            {
-                // Calculate light decay based on distance and tile type
-                float decayFactor = isSolid ? 0.7f : 0.85f; // Less decay through air
-                
-                // Check 8 neighbors (including diagonals for smoother spread)
-                var neighbors = new[]
-                {
-                    (x - 1, y - 1, 1.414f), // Diagonal
-                    (x, y - 1, 1.0f),       // Up
-                    (x + 1, y - 1, 1.414f), // Diagonal
-                    (x - 1, y, 1.0f),       // Left
-                    (x + 1, y, 1.0f),       // Right
-                    (x - 1, y + 1, 1.414f), // Diagonal
-                    (x, y + 1, 1.0f),       // Down
-                    (x + 1, y + 1, 1.414f)  // Diagonal
-                };
-                
-                foreach (var (nx, ny, stepDist) in neighbors)
-                {
-                    if (nx < 0 || nx >= _world.Width || ny < 0 || ny >= _world.Height)
-                        continue;
-                    
-                    if (visited.Contains((nx, ny))) continue;
-                    
-                    float newDist = dist + stepDist;
-                    if (newDist > radius) continue;
-                    
-                    // Calculate new light level with softer distance-based falloff
-                    // Use smoother curve for more cozy, natural light spread
-                    float normalizedDist = newDist / radius;
-                    // Softer falloff: starts gentle, then drops more gradually
-                    float falloff = 1f - (normalizedDist * normalizedDist); // Quadratic for softer edges
-                    falloff = MathF.Pow(falloff, 1.1f); // Even softer for cozy feel (reduced from 1.2f)
-                    
-                    // Check if target tile is reflective and add reflection boost
-                    var targetTile = _world.GetTile(nx, ny);
-                    float targetReflectivity = TileProperties.GetReflectivity(targetTile);
-                    if (targetReflectivity > 0.1f && TileProperties.IsSolid(targetTile))
-                    {
-                        // Reflective surfaces get a small light boost (light bounces off)
-                        falloff *= (1f + targetReflectivity * 0.2f); // Up to 20% boost
-                    }
-                    
-                    byte newLight = (byte)(currentLight * decayFactor * falloff);
-                    
-                    // Only propagate if light is significant
-                    if (newLight > 10) // Minimum threshold
-                    {
-                        queue.Enqueue((nx, ny, newLight, newDist));
-                        visited.Add((nx, ny));
-                    }
-                }
-            }
-        }
-    }
+        TileType.Torch => new Color(255, 220, 180),      
+        TileType.Lava => new Color(255, 100, 50),        
+        TileType.Furnace => new Color(255, 180, 100),    
+        _ => Color.White
+    };
     
     private float CalculateSunBrightness(float dayTime)
     {
-        // dayTime: 0 = midnight, 0.25 = 6am, 0.5 = noon, 0.75 = 6pm
-        
-        if (dayTime >= 0.25f && dayTime <= 0.75f)
+        if (dayTime >= 0.2f && dayTime <= 0.8f) // Wider day
         {
-            // Daytime
-            float t = (dayTime - 0.25f) / 0.5f;
-            return 0.3f + 0.7f * MathF.Sin(t * MathF.PI);
+            float t = (dayTime - 0.2f) / 0.6f;
+            return 0.1f + 0.9f * (float)Math.Sin(t * Math.PI);
         }
-        else
-        {
-            // Nighttime
-            return 0.05f;
-        }
+        return 0.05f; // Darker nights
+    }
+    
+    private Color CalculateSunColor(float dayTime)
+    {
+        // Simple Sunrise/Sunset logic
+        if (dayTime > 0.2f && dayTime < 0.3f) return Color.Lerp(Color.OrangeRed, Color.White, (dayTime - 0.2f) * 10);
+        if (dayTime > 0.7f && dayTime < 0.8f) return Color.Lerp(Color.White, Color.OrangeRed, (dayTime - 0.7f) * 10);
+        if (dayTime < 0.2f || dayTime > 0.8f) return new Color(30, 30, 50); // Moonlight
+        return Color.White;
     }
     
     private void UpdateLightTexture()
     {
-        if (_lightTexture == null) return;
+        // Generate texture for Multiply blending
+        // The texture should contain the LIGHT COLOR directly.
+        // When drawing: (WorldColor * LightMapColor)
         
-        for (int y = 0; y < _world.Height; y++)
+        for (int i = 0; i < _lightTextureData.Length; i++)
         {
-            for (int x = 0; x < _world.Width; x++)
-            {
-                byte light = _lightMap[x, y];
-                Color lightColor = _lightColorMap[x, y];
-                
-                // Calculate darkness overlay with color tint
-                float lightFactor = light / 255f;
-                byte darkness = (byte)(255 - light);
-                
-                // Apply color tint to darkness (warmer/cooler shadows)
-                Color darknessColor = new Color(
-                    (byte)(255 - (lightColor.R * (1 - lightFactor))),
-                    (byte)(255 - (lightColor.G * (1 - lightFactor))),
-                    (byte)(255 - (lightColor.B * (1 - lightFactor))),
-                    darkness
-                );
-                
-                _lightTextureData[y * _world.Width + x] = darknessColor;
-            }
+            int x = i % _world.Width;
+            int y = i / _world.Width;
+            _lightTextureData[i] = _lightMap[x, y];
         }
         
-        _lightTexture.SetData(_lightTextureData);
+        _lightTexture?.SetData(_lightTextureData);
     }
     
-    /// <summary>
-    /// Get light color at a tile position
-    /// </summary>
-    public Color GetLightColor(int tileX, int tileY)
+    // Helper: multiply color by intensity
+    private static Color MultiplyColor(Color color, byte intensity)
     {
-        if (tileX < 0 || tileX >= _world.Width || tileY < 0 || tileY >= _world.Height)
-            return Color.Black;
-        return _lightColorMap[tileX, tileY];
-    }
-    
-    /// <summary>
-    /// Draw the lighting overlay
-    /// </summary>
-    public void Draw(SpriteBatch spriteBatch, Camera2D camera)
-    {
-        if (_lightTexture == null) return;
-        
-        // Draw lighting texture scaled to world size
-        var destRect = new Rectangle(0, 0, _world.PixelWidth, _world.PixelHeight);
-        
-        spriteBatch.Draw(_lightTexture, destRect, Color.White);
-    }
-    
-    /// <summary>
-    /// Get light level at a tile position (0-255)
-    /// </summary>
-    public byte GetLight(int tileX, int tileY)
-    {
-        if (tileX < 0 || tileX >= _world.Width || tileY < 0 || tileY >= _world.Height)
-            return 0;
-        return _lightMap[tileX, tileY];
-    }
-    
-    /// <summary>
-    /// Mark a region as needing light recalculation
-    /// </summary>
-    public void MarkDirty(int tileX, int tileY, int radius = 12)
-    {
-        var newDirty = new Rectangle(
-            tileX - radius,
-            tileY - radius,
-            radius * 2,
-            radius * 2
+        float factor = intensity / 255f;
+        return new Color(
+            (byte)(color.R * factor),
+            (byte)(color.G * factor),
+            (byte)(color.B * factor)
         );
-        
-        if (_dirtyRegion.IsEmpty)
-            _dirtyRegion = newDirty;
-        else
-            _dirtyRegion = Rectangle.Union(_dirtyRegion, newDirty);
     }
     
-    /// <summary>
-    /// Force full lighting recalculation
-    /// </summary>
-    public void ForceFullUpdate()
+    private static Color MaxColor(Color a, Color b)
     {
-        _fullUpdateRequired = true;
+        return new Color(Math.Max(a.R, b.R), Math.Max(a.G, b.G), Math.Max(a.B, b.B));
     }
+    
+    public void ForceFullUpdate() => _fullUpdateRequired = true;
     
     public void Dispose()
     {

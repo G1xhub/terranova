@@ -53,12 +53,6 @@ public class WorldGenerator
     public void Generate()
     {
         Console.WriteLine($"Generating world {_world.Width}x{_world.Height} with seed {_seed}...");
-        TerraNovaGame.AgentLog("WorldGenerator.Generate", "start", new
-        {
-            _world.Width,
-            _world.Height,
-            _seed
-        }, "H1-world-empty");
         
         // Phase 1: Generate heightmap and biomes
         GenerateHeightmapAndBiomes();
@@ -81,11 +75,8 @@ public class WorldGenerator
         // Phase 7: Final pass (cleanup, validation)
         FinalPass();
         
-        // Store biome data in world
-        if (_biomes != null)
-        {
-            _world.SetBiomes(_biomes);
-        }
+        // Store surface heights in world for background rendering
+        _world.SetSurfaceHeights(_surfaceHeights!);
         
         Console.WriteLine("World generation complete!");
     }
@@ -99,12 +90,11 @@ public class WorldGenerator
         
         for (int x = 0; x < _world.Width; x++)
         {
-            // Multi-octave terrain height - reduced for flatter surface
+            // Multi-octave terrain height - FLATTENED for better gameplay
             double height = 0;
-            height += _terrainNoise.Noise2D(x * 0.003, 0) * 30;   // Large hills (reduced from 80)
-            height += _terrainNoise.Noise2D(x * 0.01, 0) * 15;    // Medium variation (reduced from 30)
-            height += _terrainNoise.Noise2D(x * 0.05, 0) * 5;      // Small bumps (reduced from 10)
-            height += _detailNoise.Noise2D(x * 0.1, 0) * 2;       // Micro detail (reduced from 4)
+            height += _terrainNoise.Noise2D(x * 0.002, 0) * 8;    // Very gentle hills
+            height += _terrainNoise.Noise2D(x * 0.008, 0) * 4;    // Small variation
+            height += _detailNoise.Noise2D(x * 0.02, 0) * 2;      // Minor bumps
             
             _surfaceHeights[x] = _surfaceLevel + (int)height;
             
@@ -511,188 +501,7 @@ public class WorldGenerator
             }
         }
         
-        // Add world details: grass patches, flowers, stones, tile variations
-        AddWorldDetails();
-    }
-    
-    private void AddWorldDetails()
-    {
-        Console.WriteLine("  Adding world details...");
-        
-        for (int x = 0; x < _world.Width; x++)
-        {
-            int surface = _surfaceHeights![x];
-            var biome = _biomes![x];
-            
-            // Only add details on surface
-            if (surface < 0 || surface >= _world.Height) continue;
-            
-            var surfaceTile = _world.GetTile(x, surface);
-            
-            // Add details to grass surfaces
-            if (surfaceTile == TileType.Grass || surfaceTile == TileType.JungleGrass)
-            {
-                // Grass patches - denser grass in some areas
-                double grassDetail = _detailNoise.Noise2D(x * 0.2, surface * 0.2);
-                if (grassDetail > 0.6 && Random.Shared.NextDouble() < 0.3)
-                {
-                    // Create a small grass patch (visual variation handled in rendering)
-                    // The grass tile itself will have variation based on position
-                }
-                
-                // Flowers - random placement on grass
-                if (biome == BiomeType.Forest || biome == BiomeType.Jungle)
-                {
-                    double flowerNoise = _detailNoise.Noise2D(x * 0.15, surface * 0.15 + 500);
-                    if (flowerNoise > 0.7 && Random.Shared.NextDouble() < 0.05)
-                    {
-                        // Place flower above grass (in air)
-                        if (surface > 0 && _world.GetTile(x, surface - 1) == TileType.Air)
-                        {
-                            // Use a decorative approach: store flower data in a separate system
-                            // For now, we'll use visual variation in the grass tile rendering
-                        }
-                    }
-                }
-                
-                // Small stones on surface
-                double stoneNoise = _detailNoise.Noise2D(x * 0.25, surface * 0.25 + 1000);
-                if (stoneNoise > 0.75 && Random.Shared.NextDouble() < 0.02)
-                {
-                    // Place small stone (visual variation in grass tile)
-                    // Similar to flowers, handled via rendering variation
-                }
-            }
-            
-            // Add variation to stone tiles underground
-            for (int y = surface + 20; y < Math.Min(surface + 100, _world.Height - 1); y++)
-            {
-                var tile = _world.GetTile(x, y);
-                if (tile == TileType.Stone)
-                {
-                    // Add visual variation based on position
-                    // This will be handled in the texture generation
-                }
-            }
-        }
-    }
-    
-    private void GenerateUndergroundBiomes()
-    {
-        Console.WriteLine("  Generating underground biomes...");
-        
-        var undergroundBiomes = new BiomeType[_world.Width * _world.Height];
-        
-        for (int x = 0; x < _world.Width; x++)
-        {
-            int surface = _surfaceHeights![x];
-            
-            for (int y = surface + 20; y < _world.Height - 10; y++)
-            {
-                int depth = y - surface;
-                var tile = _world.GetTile(x, y);
-                
-                // Only assign biomes to air tiles (caves)
-                if (tile != TileType.Air) continue;
-                
-                // Use noise to determine biome type
-                double biomeNoise = _biomeNoise.Noise2D(x * 0.01, y * 0.01);
-                double crystalNoise = _detailNoise.Noise2D(x * 0.05, y * 0.05);
-                double mushroomNoise = _detailNoise.Noise2D(x * 0.08, y * 0.08 + 1000);
-                
-                BiomeType biome = BiomeType.Cave; // Default
-                
-                // Crystal caves - deeper, rare
-                if (depth > 150 && crystalNoise > 0.7)
-                {
-                    biome = BiomeType.CrystalCave;
-                }
-                // Mushroom caves - medium depth, common
-                else if (depth > 80 && depth < 200 && mushroomNoise > 0.6)
-                {
-                    biome = BiomeType.MushroomCave;
-                }
-                // Deep caves - very deep
-                else if (depth > 250)
-                {
-                    biome = BiomeType.DeepCave;
-                }
-                // Regular caves
-                else if (depth > 30)
-                {
-                    biome = BiomeType.Cave;
-                }
-                
-                int index = y * _world.Width + x;
-                if (index >= 0 && index < undergroundBiomes.Length)
-                {
-                    undergroundBiomes[index] = biome;
-                }
-            }
-        }
-        
-        _world.SetUndergroundBiomes(undergroundBiomes);
-    }
-    
-    private void PlaceCrystalsAndMushrooms()
-    {
-        Console.WriteLine("  Placing crystals and mushrooms...");
-        
-        for (int x = 0; x < _world.Width; x++)
-        {
-            int surface = _surfaceHeights![x];
-            
-            for (int y = surface + 20; y < _world.Height - 10; y++)
-            {
-                var tile = _world.GetTile(x, y);
-                if (tile != TileType.Air) continue;
-                
-                var biome = _world.GetBiomeAt(x, y);
-                int depth = y - surface;
-                
-                // Place crystals in crystal caves
-                if (biome == BiomeType.CrystalCave)
-                {
-                    double crystalChance = _detailNoise.Noise2D(x * 0.1, y * 0.1);
-                    
-                    // Check if there's a solid surface below
-                    if (_world.GetTile(x, y + 1) != TileType.Air && crystalChance > 0.75)
-                    {
-                        // Random crystal type
-                        double crystalType = _detailNoise.Noise2D(x * 0.2, y * 0.2);
-                        TileType crystalTile = crystalType < -0.3 ? TileType.BlueCrystal :
-                                               crystalType > 0.3 ? TileType.RedCrystal :
-                                               TileType.Crystal;
-                        
-                        _world.SetTile(x, y, crystalTile);
-                    }
-                }
-                
-                // Place mushrooms in mushroom caves
-                if (biome == BiomeType.MushroomCave)
-                {
-                    double mushroomChance = _detailNoise.Noise2D(x * 0.15, y * 0.15);
-                    
-                    // Check if there's a solid surface below
-                    if (_world.GetTile(x, y + 1) != TileType.Air && mushroomChance > 0.7)
-                    {
-                        // 30% chance for glowing mushroom
-                        TileType mushroomTile = mushroomChance > 0.85 ? TileType.GlowingMushroom : TileType.Mushroom;
-                        _world.SetTile(x, y, mushroomTile);
-                    }
-                }
-                
-                // Also place some crystals in deep caves
-                if (biome == BiomeType.DeepCave && depth > 300)
-                {
-                    double crystalChance = _detailNoise.Noise2D(x * 0.12, y * 0.12);
-                    if (_world.GetTile(x, y + 1) != TileType.Air && crystalChance > 0.8)
-                    {
-                        _world.SetTile(x, y, TileType.Crystal);
-                    }
-                }
-            }
-        }
+        // TODO: Add more cleanup/validation
     }
 }
 
@@ -704,11 +513,5 @@ public enum BiomeType
     Jungle,
     Corruption, // Evil biome
     Crimson,    // Alternative evil biome
-    Hallow,      // Post-hardmode biome
-    
-    // Underground biomes
-    Cave,
-    CrystalCave,
-    MushroomCave,
-    DeepCave
+    Hallow      // Post-hardmode biome
 }
