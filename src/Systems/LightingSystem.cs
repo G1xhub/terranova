@@ -52,8 +52,22 @@ public class LightingSystem : IDisposable
         _lightColorMap = new Color[world.Width, world.Height];
         _lightTextureData = new Color[world.Width * world.Height];
         _lightIntensityModifiers = new float[world.Width, world.Height];
+        ResetAllLightIntensityModifiers();
 
         CreateLightTexture();
+    }
+    
+    private void ResetAllLightIntensityModifiers()
+    {
+        // 1.0f means "no modification". The CLR default for float arrays is 0.0f,
+        // which would zero-out all dynamic light sources on the first full lighting pass.
+        for (int y = 0; y < _world.Height; y++)
+        {
+            for (int x = 0; x < _world.Width; x++)
+            {
+                _lightIntensityModifiers[x, y] = 1.0f;
+            }
+        }
     }
     
     private void CreateLightTexture()
