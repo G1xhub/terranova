@@ -39,8 +39,8 @@ public class TerraNovaGame : Game
     private float _dayTime = 0.25f; // 0-1, 0.25 = 6:00 AM
     private const float DayDuration = 1200f; // Seconds per full day
     
-    // Heat-based color filters
-    private Dictionary<(int x, int y), float> _heatInfluenceMap = new();
+    // Heat-based color filters (2D array for better cache performance)
+    private float[,]? _heatInfluenceMap;
     private float _heatUpdateTimer = 0f;
     private const float HeatUpdateInterval = 0.1f; // Update every 0.1 seconds instead of every frame
     
@@ -140,6 +140,9 @@ public class TerraNovaGame : Game
         var worldSeed = (int)DateTime.Now.Ticks;
         _world = new GameWorld(Config.WorldWidth, Config.WorldHeight, worldSeed);
         _world.Generate();
+
+        // Initialize heat influence map
+        _heatInfluenceMap = new float[Config.WorldWidth, Config.WorldHeight];
         AgentLog("TerraNovaGame.LoadContent", "world-generated", new
         {
             Config.WorldWidth,
@@ -151,6 +154,9 @@ public class TerraNovaGame : Game
         // Initialize lighting system
         _lighting = new LightingSystem(_world, GraphicsDevice);
         _world.SetLightingSystem(_lighting);
+
+        // Build light source cache from generated world
+        _lighting.RebuildLightSourceCache();
         
         // Initialize particle system
         _particles = new ParticleSystem();
@@ -246,8 +252,8 @@ public class TerraNovaGame : Game
             }
             else
             {
-                // Still update for dynamic effects even if lighting isn't dirty
-                _lighting.Update(_dayTime, deltaTime, _camera.VisibleArea);
+                // Only update dynamic effects (flickering) when lighting isn't dirty
+                _lighting.UpdateDynamicEffects(deltaTime, _camera.VisibleArea);
             }
             
             // Handle mining/building (only if no menu is open)
@@ -530,67 +536,49 @@ public class TerraNovaGame : Game
 
     private void UpdateHeatColorFilters(float deltaTime, Rectangle visibleArea)
     {
+        if (_heatInfluenceMap == null || _lighting == null) return;
+
         // Only update heat influence for visible area (with padding for off-screen effects)
         int padding = 10; // Tiles of padding
         int startTileX = Math.Max(0, (visibleArea.Left / GameConfig.TileSize) - padding);
         int startTileY = Math.Max(0, (visibleArea.Top / GameConfig.TileSize) - padding);
         int endTileX = Math.Min(_world.Width - 1, (visibleArea.Right / GameConfig.TileSize) + padding);
         int endTileY = Math.Min(_world.Height - 1, (visibleArea.Bottom / GameConfig.TileSize) + padding);
-        
-        // Remove heat influence outside visible area
-        var keysToRemove = new List<(int x, int y)>();
-        foreach (var key in _heatInfluenceMap.Keys)
+
+        // Clear all heat influence (faster than checking bounds for each tile)
+        Array.Clear(_heatInfluenceMap, 0, _heatInfluenceMap.Length);
+
+        // Get heat sources from lighting system cache (much faster than scanning)
+        var heatSources = _lighting.GetHeatSourcesInArea(startTileX, startTileY, endTileX, endTileY);
+
+        // Calculate heat influence only for actual heat sources
+        foreach (var (x, y) in heatSources)
         {
-            if (key.x < startTileX || key.x > endTileX || key.y < startTileY || key.y > endTileY)
+            var tile = _world.GetTile(x, y);
+
+            // Calculate heat influence radius
+            int heatRadius = tile == TileType.Lava ? 8 : (tile == TileType.Furnace ? 6 : 4);
+
+            // Apply heat influence to surrounding tiles (clamped to visible area)
+            int radius = (int)heatRadius;
+            int influenceStartX = Math.Max(0, x - radius);
+            int influenceStartY = Math.Max(0, y - radius);
+            int influenceEndX = Math.Min(_world.Width - 1, x + radius);
+            int influenceEndY = Math.Min(_world.Height - 1, y + radius);
+
+            for (int ty = influenceStartY; ty <= influenceEndY; ty++)
             {
-                keysToRemove.Add(key);
-            }
-        }
-        foreach (var key in keysToRemove)
-        {
-            _heatInfluenceMap.Remove(key);
-        }
-        
-        // Find fire sources and calculate heat influence
-        for (int y = startTileY; y <= endTileY; y++)
-        {
-            for (int x = startTileX; x <= endTileX; x++)
-            {
-                var tile = _world.GetTile(x, y);
-                if (tile == TileType.Furnace || tile == TileType.Lava || tile == TileType.Torch)
+                for (int tx = influenceStartX; tx <= influenceEndX; tx++)
                 {
-                    // Calculate heat influence radius
-                    int heatRadius = tile == TileType.Lava ? 8 : (tile == TileType.Furnace ? 6 : 4);
-                    
-                    // Apply heat influence to surrounding tiles (clamped to visible area)
-                    int radius = (int)heatRadius;
-                    int influenceStartX = Math.Max(startTileX, x - radius);
-                    int influenceStartY = Math.Max(startTileY, y - radius);
-                    int influenceEndX = Math.Min(endTileX, x + radius);
-                    int influenceEndY = Math.Min(endTileY, y + radius);
-                    
-                    for (int ty = influenceStartY; ty <= influenceEndY; ty++)
-                    {
-                        for (int tx = influenceStartX; tx <= influenceEndX; tx++)
-                        {
-                            int dx = tx - x;
-                            int dy = ty - y;
-                            float distance = MathF.Sqrt(dx * dx + dy * dy);
-                            if (distance > heatRadius) continue;
-                            
-                            float influence = 1f - (distance / heatRadius);
-                            influence = MathF.Pow(influence, 1.5f); // Softer falloff
-                            
-                            if (_heatInfluenceMap.TryGetValue((tx, ty), out var existing))
-                            {
-                                _heatInfluenceMap[(tx, ty)] = Math.Max(existing, influence);
-                            }
-                            else
-                            {
-                                _heatInfluenceMap[(tx, ty)] = influence;
-                            }
-                        }
-                    }
+                    int dx = tx - x;
+                    int dy = ty - y;
+                    float distance = MathF.Sqrt(dx * dx + dy * dy);
+                    if (distance > heatRadius) continue;
+
+                    float influence = 1f - (distance / heatRadius);
+                    influence = MathF.Pow(influence, 1.5f); // Softer falloff
+
+                    _heatInfluenceMap[tx, ty] = Math.Max(_heatInfluenceMap[tx, ty], influence);
                 }
             }
         }
@@ -985,22 +973,30 @@ public class TerraNovaGame : Game
     {
         // Draw random stars (using seeded random based on position for consistency)
         int starCount = 30;
+        int baseSeed = (int)(visible.Left / 100);
+
         for (int i = 0; i < starCount; i++)
         {
-            // Use position-based seed for consistent star positions
-            int seed = (int)(visible.Left / 100) + i * 1000;
-            var rng = new Random(seed);
-            
-            float starX = visible.Left + rng.NextSingle() * skyWidth;
-            float starY = visible.Top + rng.NextSingle() * skyHeight * 0.6f;
-            
+            // Use deterministic hash function instead of creating Random objects
+            int seed = baseSeed + i * 1000;
+            uint hash = (uint)seed;
+            // Simple hash function for deterministic pseudo-random values
+            hash = hash * 0x9E3779B1u; // Knuth's multiplicative hash
+            float hashX = (hash & 0xFFFF) / (float)0xFFFF;
+            hash = hash * 0x9E3779B1u;
+            float hashY = (hash & 0xFFFF) / (float)0xFFFF;
+            hash = hash * 0x9E3779B1u;
+            int starSize = (int)((hash & 0x1) + 1); // 1 or 2
+
+            float starX = visible.Left + hashX * skyWidth;
+            float starY = visible.Top + hashY * skyHeight * 0.6f;
+
             // Twinkle effect based on time
             float twinkle = (MathF.Sin(_dayTime * 20f + i) + 1f) * 0.5f;
             float starAlpha = (0.3f + twinkle * 0.7f) * (1f - GetTimeBrightness());
-            
+
             if (starAlpha > 0.1f)
             {
-                int starSize = rng.Next(1, 3);
                 byte alpha = (byte)(255 * starAlpha);
                 var starColor = new Color((byte)255, (byte)255, (byte)255, alpha);
                 var starRect = new Rectangle((int)starX, (int)starY, starSize, starSize);

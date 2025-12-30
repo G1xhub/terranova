@@ -31,21 +31,43 @@ public class LightingSystem : IDisposable
     private Rectangle _dirtyRegion;
     private bool _fullUpdateRequired = true;
     
-    // Dynamic light intensity (flickering, pulsing)
+    // Dynamic light intensity (flickering, pulsing) - 2D array for better performance
     private float _timeAccumulator = 0f;
-    private readonly Dictionary<(int x, int y), float> _lightIntensityModifiers = new();
+    private float[,] _lightIntensityModifiers;
     private bool _lightingChanged = false;
+
+    // Cache of light source positions for fast lookup (no need to scan entire world)
+    private readonly HashSet<(int x, int y)> _lightSources = new();
+
+    // Object pools for BFS structures to reduce GC pressure
+    private readonly Queue<(int x, int y, byte light, float distance)> _bfsQueue = new();
+    private readonly HashSet<(int, int)> _bfsVisited = new();
     
     public LightingSystem(GameWorld world, GraphicsDevice graphicsDevice)
     {
         _world = world;
         _graphicsDevice = graphicsDevice;
-        
+
         _lightMap = new byte[world.Width, world.Height];
         _lightColorMap = new Color[world.Width, world.Height];
         _lightTextureData = new Color[world.Width * world.Height];
-        
+        _lightIntensityModifiers = new float[world.Width, world.Height];
+        ResetAllLightIntensityModifiers();
+
         CreateLightTexture();
+    }
+    
+    private void ResetAllLightIntensityModifiers()
+    {
+        // 1.0f means "no modification". The CLR default for float arrays is 0.0f,
+        // which would zero-out all dynamic light sources on the first full lighting pass.
+        for (int y = 0; y < _world.Height; y++)
+        {
+            for (int x = 0; x < _world.Width; x++)
+            {
+                _lightIntensityModifiers[x, y] = 1.0f;
+            }
+        }
     }
     
     private void CreateLightTexture()
@@ -55,40 +77,46 @@ public class LightingSystem : IDisposable
     }
     
     /// <summary>
-    /// Update lighting for the world
+    /// Update lighting for the world (full recalculation)
     /// </summary>
     public void Update(float dayTime, float deltaTime = 0f, Rectangle? visibleArea = null)
     {
         // Update time accumulator for dynamic effects
         _timeAccumulator += deltaTime;
-        
+
         if (_fullUpdateRequired)
         {
             CalculateFullLighting(dayTime);
             _fullUpdateRequired = false;
+            UpdateLightTexture();
+            _lightingChanged = false;
         }
         else
         {
             // Incremental update for changed regions
             // TODO: Implement dirty region updates
         }
-        
+    }
+
+    /// <summary>
+    /// Update only dynamic lighting effects (flickering, no full recalculation)
+    /// </summary>
+    public void UpdateDynamicEffects(float deltaTime, Rectangle? visibleArea = null)
+    {
+        _timeAccumulator += deltaTime;
+
         // Update dynamic light intensity modifiers (flickering, pulsing) - only visible area
         UpdateDynamicLightIntensity(visibleArea);
-        
-        // Only update light texture if lighting changed
-        if (_fullUpdateRequired || _lightingChanged)
-        {
-            UpdateLightTexture();
-            _lightingChanged = false;
-        }
+
+        // Note: We don't rebuild the texture here, flickering is handled in the shader/rendering
+        // This just updates the intensity modifiers that affect AddPointLight calculations
     }
     
     private void UpdateDynamicLightIntensity(Rectangle? visibleArea = null)
     {
         // Only update modifiers for visible light sources (with some padding for off-screen effects)
         int padding = 5; // Tiles of padding for light sources just outside view
-        
+
         if (visibleArea.HasValue)
         {
             var area = visibleArea.Value;
@@ -96,33 +124,35 @@ public class LightingSystem : IDisposable
             int startY = Math.Max(0, (area.Top / GameConfig.TileSize) - padding);
             int endX = Math.Min(_world.Width - 1, (area.Right / GameConfig.TileSize) + padding);
             int endY = Math.Min(_world.Height - 1, (area.Bottom / GameConfig.TileSize) + padding);
-            
-            // Remove modifiers outside visible area
-            var keysToRemove = new List<(int x, int y)>();
-            foreach (var key in _lightIntensityModifiers.Keys)
+
+            // Clear modifiers outside visible area
+            for (int y = 0; y < _world.Height; y++)
             {
-                if (key.x < startX || key.x > endX || key.y < startY || key.y > endY)
+                for (int x = 0; x < _world.Width; x++)
                 {
-                    keysToRemove.Add(key);
+                    if (x < startX || x > endX || y < startY || y > endY)
+                    {
+                        _lightIntensityModifiers[x, y] = 1.0f; // Default to no modification
+                    }
                 }
             }
-            foreach (var key in keysToRemove)
-            {
-                _lightIntensityModifiers.Remove(key);
-            }
-            
-            // Update or add modifiers for visible area
+
+            // Update modifiers for visible area
             for (int y = startY; y <= endY; y++)
             {
                 for (int x = startX; x <= endX; x++)
                 {
                     var tile = _world.GetTile(x, y);
                     int lightLevel = TileProperties.GetLightLevel(tile);
-                    
+
                     if (lightLevel > 0)
                     {
                         float modifier = GetLightIntensityModifier(tile, x, y);
-                        _lightIntensityModifiers[(x, y)] = modifier;
+                        _lightIntensityModifiers[x, y] = modifier;
+                    }
+                    else
+                    {
+                        _lightIntensityModifiers[x, y] = 1.0f;
                     }
                 }
             }
@@ -130,18 +160,21 @@ public class LightingSystem : IDisposable
         else
         {
             // Fallback: update all (for initial load or when camera not available)
-            _lightIntensityModifiers.Clear();
             for (int y = 0; y < _world.Height; y++)
             {
                 for (int x = 0; x < _world.Width; x++)
                 {
                     var tile = _world.GetTile(x, y);
                     int lightLevel = TileProperties.GetLightLevel(tile);
-                    
+
                     if (lightLevel > 0)
                     {
                         float modifier = GetLightIntensityModifier(tile, x, y);
-                        _lightIntensityModifiers[(x, y)] = modifier;
+                        _lightIntensityModifiers[x, y] = modifier;
+                    }
+                    else
+                    {
+                        _lightIntensityModifiers[x, y] = 1.0f;
                     }
                 }
             }
@@ -225,12 +258,13 @@ public class LightingSystem : IDisposable
         // Phase 2: Add light from light-emitting tiles with colors (do this before propagation)
         AddEmissiveLights();
         
-        // Phase 3: Light propagation with color (multiple passes for softer spread)
+        // Phase 3: Light propagation with color (optimized to 3 passes for performance)
         // This propagates both sunlight and light from sources
-        PropagateLightWithColor(6); // Increased from 5 to 6 for softer, more natural light spread
+        PropagateLightWithColor(3); // Reduced from 6 to 3 for better performance
         
         // Phase 4: Add indirect lighting (light bouncing off reflective surfaces) for cozy feel
-        AddIndirectLighting();
+        // Reduced from 3 to 2 passes for performance
+        AddIndirectLighting(2);
         
         _lightingChanged = true;
     }
@@ -408,26 +442,79 @@ public class LightingSystem : IDisposable
     
     private void AddEmissiveLights()
     {
+        // Use cached light sources instead of scanning entire world
+        foreach (var (x, y) in _lightSources)
+        {
+            var tile = _world.GetTile(x, y);
+            int lightLevel = TileProperties.GetLightLevel(tile);
+
+            if (lightLevel > 0)
+            {
+                AddPointLight(x, y, lightLevel);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Register a light source at a position
+    /// </summary>
+    public void AddLightSource(int x, int y)
+    {
+        _lightSources.Add((x, y));
+        _fullUpdateRequired = true;
+    }
+
+    /// <summary>
+    /// Remove a light source at a position
+    /// </summary>
+    public void RemoveLightSource(int x, int y)
+    {
+        _lightSources.Remove((x, y));
+        _fullUpdateRequired = true;
+    }
+
+    /// <summary>
+    /// Rebuild light source cache from entire world (called on world generation)
+    /// </summary>
+    public void RebuildLightSourceCache()
+    {
+        _lightSources.Clear();
         for (int y = 0; y < _world.Height; y++)
         {
             for (int x = 0; x < _world.Width; x++)
             {
                 var tile = _world.GetTile(x, y);
-                int lightLevel = TileProperties.GetLightLevel(tile);
-                
-                if (lightLevel > 0)
+                if (TileProperties.GetLightLevel(tile) > 0)
                 {
-                    AddPointLight(x, y, lightLevel);
+                    _lightSources.Add((x, y));
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Get heat sources (Torch, Furnace, Lava) in a specific area
+    /// </summary>
+    public IEnumerable<(int x, int y)> GetHeatSourcesInArea(int startX, int startY, int endX, int endY)
+    {
+        foreach (var (x, y) in _lightSources)
+        {
+            if (x >= startX && x <= endX && y >= startY && y <= endY)
+            {
+                var tile = _world.GetTile(x, y);
+                if (tile == TileType.Torch || tile == TileType.Furnace || tile == TileType.Lava)
+                {
+                    yield return (x, y);
                 }
             }
         }
     }
     
-    private void AddIndirectLighting()
+    private void AddIndirectLighting(int passes = 2)
     {
         // Add indirect lighting from reflective surfaces - light bouncing off walls
         // This creates a cozy, warm atmosphere with softer light spread
-        for (int pass = 0; pass < 3; pass++) // Increased from 2 to 3 passes for better indirect bounce
+        for (int pass = 0; pass < passes; pass++)
         {
             for (int y = 1; y < _world.Height - 1; y++)
             {
@@ -518,26 +605,26 @@ public class LightingSystem : IDisposable
     {
         var tile = _world.GetTile(centerX, centerY);
         Color lightColor = GetLightColorForTile(tile);
-        
+
         // Increase radius for better light spread
         // Torch (12) -> 18 tiles, Furnace (8) -> 12 tiles, Lava (15) -> 22 tiles
         int baseRadius = intensity;
         int radius = baseRadius + (baseRadius / 2); // 50% more radius
-        
-        // Use BFS-like approach for better light propagation through air
-        var queue = new Queue<(int x, int y, byte light, float distance)>();
-        var visited = new HashSet<(int, int)>();
-        
-        // Start from center
+
+        // Use pooled BFS structures to reduce GC pressure
+        _bfsQueue.Clear();
+        _bfsVisited.Clear();
+
         // Start from center with dynamic intensity modifier
-        float intensityModifier = _lightIntensityModifiers.TryGetValue((centerX, centerY), out var mod) ? mod : 1.0f;
+        float intensityModifier = (centerX >= 0 && centerX < _world.Width && centerY >= 0 && centerY < _world.Height)
+            ? _lightIntensityModifiers[centerX, centerY] : 1.0f;
         byte centerLight = (byte)Math.Min(255, intensity * 25 * intensityModifier); // Apply dynamic modifier
-        queue.Enqueue((centerX, centerY, centerLight, 0f));
-        visited.Add((centerX, centerY));
-        
-        while (queue.Count > 0)
+        _bfsQueue.Enqueue((centerX, centerY, centerLight, 0f));
+        _bfsVisited.Add((centerX, centerY));
+
+        while (_bfsQueue.Count > 0)
         {
-            var (x, y, currentLight, dist) = queue.Dequeue();
+            var (x, y, currentLight, dist) = _bfsQueue.Dequeue();
             
             if (x < 0 || x >= _world.Width || y < 0 || y >= _world.Height)
                 continue;
@@ -582,8 +669,8 @@ public class LightingSystem : IDisposable
                 {
                     if (nx < 0 || nx >= _world.Width || ny < 0 || ny >= _world.Height)
                         continue;
-                    
-                    if (visited.Contains((nx, ny))) continue;
+
+                    if (_bfsVisited.Contains((nx, ny))) continue;
                     
                     float newDist = dist + stepDist;
                     if (newDist > radius) continue;
@@ -609,8 +696,8 @@ public class LightingSystem : IDisposable
                     // Only propagate if light is significant
                     if (newLight > 10) // Minimum threshold
                     {
-                        queue.Enqueue((nx, ny, newLight, newDist));
-                        visited.Add((nx, ny));
+                        _bfsQueue.Enqueue((nx, ny, newLight, newDist));
+                        _bfsVisited.Add((nx, ny));
                     }
                 }
             }

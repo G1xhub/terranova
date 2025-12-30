@@ -36,8 +36,8 @@ public class GameWorld
     // Lighting system reference
     private LightingSystem? _lightingSystem;
     
-    // Heat influence map (for warm color filters)
-    private Dictionary<(int x, int y), float>? _heatInfluenceMap;
+    // Heat influence map (for warm color filters) - 2D array for better performance
+    private float[,]? _heatInfluenceMap;
     
     // Biome data (per column, stored by WorldGenerator)
     private BiomeType[]? _biomes;
@@ -56,14 +56,16 @@ public class GameWorld
     
     public LightingSystem? GetLightingSystem() => _lightingSystem;
     
-    public void SetHeatInfluenceMap(Dictionary<(int x, int y), float> heatMap)
+    public void SetHeatInfluenceMap(float[,] heatMap)
     {
         _heatInfluenceMap = heatMap;
     }
-    
+
     public float GetHeatInfluence(int tileX, int tileY)
     {
-        return _heatInfluenceMap?.TryGetValue((tileX, tileY), out var influence) == true ? influence : 0f;
+        if (_heatInfluenceMap == null || tileX < 0 || tileX >= Width || tileY < 0 || tileY >= Height)
+            return 0f;
+        return _heatInfluenceMap[tileX, tileY];
     }
     
     public void SetBiomes(BiomeType[] biomes)
@@ -163,16 +165,34 @@ public class GameWorld
     {
         if (tileX < 0 || tileX >= Width || tileY < 0 || tileY >= Height)
             return;
-        
+
         int chunkX = tileX / Chunk.Size;
         int chunkY = tileY / Chunk.Size;
         int localX = tileX % Chunk.Size;
         int localY = tileY % Chunk.Size;
-        
+
+        // Get old tile to check if light source changed
+        var oldTile = GetTile(tileX, tileY);
+        bool oldEmitsLight = TileProperties.GetLightLevel(oldTile) > 0;
+        bool newEmitsLight = TileProperties.GetLightLevel(type) > 0;
+
         var chunk = _chunks[chunkX, chunkY];
         chunk.SetTileLocal(localX, localY, type);
         _dirtyChunks.Add(chunk);
-        
+
+        // Update light source cache
+        if (_lightingSystem != null)
+        {
+            if (oldEmitsLight && !newEmitsLight)
+            {
+                _lightingSystem.RemoveLightSource(tileX, tileY);
+            }
+            else if (!oldEmitsLight && newEmitsLight)
+            {
+                _lightingSystem.AddLightSource(tileX, tileY);
+            }
+        }
+
         // Mark neighboring chunks as dirty for lighting
         MarkNeighborsDirty(chunkX, chunkY);
         LightingDirty = true;
